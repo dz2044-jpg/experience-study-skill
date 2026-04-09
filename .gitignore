@@ -1,0 +1,11 @@
+.venv/
+.uv-cache/
+.pycache/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+tmp_sessions/
+tmp_input.csv
+data/output/

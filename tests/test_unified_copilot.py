@@ -1,0 +1,104 @@
+from pathlib import Path
+
+import pandas as pd
+
+from core.copilot_agent import UnifiedCopilot
+from tests.conftest import final_message
+
+
+def test_tool_gating_hides_visualization_before_sweep(tmp_path: Path):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    intent = copilot._summarize_intent("Generate the combined report.")
+
+    assert "generate_combined_report" not in copilot._enabled_tool_names(intent)
+
+
+def test_analysis_requires_prepared_dataset(tmp_path: Path):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+
+    events = list(copilot.process_message("Run a 1-way sweep on Gender."))
+
+    assert "Profile a dataset first" in final_message(events)
+
+
+def test_profile_only_request_creates_session_local_prepared_dataset(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+
+    events = list(copilot.process_message(f"Profile {sample_csv_path} and tell me the columns."))
+
+    assert "prepared dataset" in final_message(events)
+    assert copilot.state.prepared_dataset_ready is True
+    assert copilot.state.prepared_dataset_path is not None
+    assert copilot.state.prepared_dataset_path.exists()
+
+
+def test_analysis_only_request_runs_after_profile(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    list(copilot.process_message(f"Profile {sample_csv_path}"))
+
+    events = list(copilot.process_message("Run a 1-way sweep on Gender."))
+
+    assert "dimensional sweep" in final_message(events)
+    assert copilot.state.latest_sweep_ready is True
+    assert copilot.state.latest_sweep_path is not None
+    assert copilot.state.latest_sweep_path.exists()
+
+
+def test_visualize_only_request_runs_after_sweep(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    list(copilot.process_message(f"Profile {sample_csv_path}"))
+    list(copilot.process_message("Run a 1-way sweep on Gender."))
+
+    events = list(copilot.process_message("Generate the combined report."))
+
+    assert "visualization report" in final_message(events).lower()
+    assert copilot.state.latest_visualization_ready is True
+    assert copilot.state.latest_visualization_path is not None
+    assert copilot.state.latest_visualization_path.exists()
+
+
+def test_full_pipeline_runs_in_order_with_session_local_artifacts(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+
+    events = list(
+        copilot.process_message(
+            f"Profile {sample_csv_path}, group Issue_Age into 3 equal-width bands, "
+            "run a 1-way sweep on Gender, and generate the combined report."
+        )
+    )
+
+    message = final_message(events).lower()
+    assert "prepared dataset" in message
+    assert "dimensional sweep" in message
+    assert "visualization report" in message
+    assert copilot.state.prepared_dataset_ready is True
+    assert copilot.state.latest_sweep_ready is True
+    assert copilot.state.latest_visualization_ready is True
+
+
+def test_filtered_analysis_request_respects_filter_clause(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    list(copilot.process_message(f"Profile {sample_csv_path}"))
+
+    list(copilot.process_message("Run a 1-way sweep on Gender where Smoker = Yes."))
+
+    sweep_path = copilot.state.latest_sweep_path
+    assert sweep_path is not None
+    result_df = pd.read_csv(sweep_path)
+    assert not result_df.empty
+    assert "Dimensions" in result_df.columns
