@@ -153,3 +153,23 @@ def test_filtered_analysis_request_respects_filter_clause(
     result_df = pd.read_csv(sweep_path)
     assert not result_df.empty
     assert "Dimensions" in result_df.columns
+
+
+def test_failed_tool_call_surfaces_exact_error_without_retrying(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    list(copilot.process_message(f"Profile {sample_csv_path}"))
+
+    events = list(copilot.process_message("Group Unknown Column into 3 equal-width bands."))
+
+    tool_starts = [event.message for event in events if event.type == "tool_start"]
+    message = final_message(events)
+
+    assert tool_starts == ["Executing `create_categorical_bands`."]
+    assert copilot.state.prepared_dataset_path is not None
+    assert (
+        f"Column `Unknown_Column` was not found in `{copilot.state.prepared_dataset_path}`."
+        in message
+    )

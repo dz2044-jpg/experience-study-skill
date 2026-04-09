@@ -46,3 +46,23 @@ def test_missing_visualization_prerequisite_returns_guidance(tmp_path: Path):
 
     assert "Run a dimensional sweep first" in final_message(events)
 
+
+def test_prompt_state_contract_exposes_readiness_flags_and_artifact_paths(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+
+    list(copilot.process_message(f"Profile {sample_csv_path}"))
+    list(copilot.process_message("Run a 1-way sweep on Gender."))
+
+    prompt_state = copilot.state.to_prompt()
+
+    assert "Current Session State:" in prompt_state
+    assert f"- output_dir: {copilot.state.output_dir}" in prompt_state
+    assert "- prepared_dataset_ready: True" in prompt_state
+    assert f"- prepared_dataset_path: {copilot.state.prepared_dataset_path}" in prompt_state
+    assert "- latest_sweep_ready: True" in prompt_state
+    assert f"- latest_sweep_path: {copilot.state.latest_sweep_path}" in prompt_state
+    assert "- latest_sweep_paths_by_depth: {1:" in prompt_state
+    assert "- latest_visualization_ready: False" in prompt_state

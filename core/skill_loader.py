@@ -31,6 +31,14 @@ class LoadedSkill:
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 
 
+def _normalize_skill_identifiers(skill_name: str) -> tuple[str, str]:
+    """Return canonical public and importable package identifiers for a skill."""
+    requested_name = skill_name.strip()
+    public_name = requested_name.replace("_", "-")
+    package_name = requested_name.replace("-", "_")
+    return public_name, package_name
+
+
 def _parse_skill_markdown(content: str) -> tuple[dict[str, Any], str]:
     """Split YAML frontmatter from markdown instructions."""
     match = _FRONTMATTER_RE.match(content.strip())
@@ -44,10 +52,13 @@ def _parse_skill_markdown(content: str) -> tuple[dict[str, Any], str]:
 
 def load_skill(skill_name: str) -> LoadedSkill:
     """Load a skill's markdown metadata, schemas, and native tools."""
-    skill_package = f"skills.{skill_name}"
-    skill_path = Path("skills") / skill_name / "skill.md"
+    public_name, package_name = _normalize_skill_identifiers(skill_name)
+    skill_package = f"skills.{package_name}"
+    skill_path = Path("skills") / package_name / "skill.md"
     if not skill_path.exists():
-        raise FileNotFoundError(f"Skill markdown not found: {skill_path}")
+        raise FileNotFoundError(
+            f"Skill markdown not found for '{skill_name}': {skill_path}"
+        )
 
     metadata, instructions = _parse_skill_markdown(
         skill_path.read_text(encoding="utf-8")
@@ -67,7 +78,7 @@ def load_skill(skill_name: str) -> LoadedSkill:
         )
 
     return LoadedSkill(
-        name=str(metadata.get("name", skill_name)),
+        name=str(metadata.get("name", public_name)),
         description=str(metadata.get("description", "")),
         version=str(metadata.get("version", "0.0.0")),
         instructions=instructions,

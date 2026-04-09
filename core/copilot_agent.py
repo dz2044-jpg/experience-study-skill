@@ -104,16 +104,21 @@ class SessionArtifactState:
     def to_prompt(self) -> str:
         self.refresh()
         available_depths = sorted(self.latest_sweep_paths_by_depth)
+        sweep_paths_by_depth = {
+            depth: str(path) for depth, path in sorted(self.latest_sweep_paths_by_depth.items())
+        }
         lines = [
             "Current Session State:",
             f"- session_id: {self.session_id}",
+            f"- output_dir: {self.output_dir}",
             f"- raw_input_path: {self.raw_input_path or 'None'}",
             f"- prepared_dataset_ready: {self.prepared_dataset_ready}",
             f"- prepared_dataset_path: {self.prepared_dataset_path or 'None'}",
-            f"- sweep_ready: {self.latest_sweep_ready}",
+            f"- latest_sweep_ready: {self.latest_sweep_ready}",
             f"- latest_sweep_path: {self.latest_sweep_path or 'None'}",
+            f"- latest_sweep_paths_by_depth: {sweep_paths_by_depth}",
             f"- available_sweep_depths: {available_depths}",
-            f"- visualization_ready: {self.latest_visualization_ready}",
+            f"- latest_visualization_ready: {self.latest_visualization_ready}",
             f"- latest_visualization_path: {self.latest_visualization_path or 'None'}",
         ]
         return "\n".join(lines)
@@ -203,7 +208,7 @@ class UnifiedCopilot:
     def __init__(
         self,
         *,
-        skill_name: str = "experience_study_skill",
+        skill_name: str = "experience-study-skill",
         model: str | None = None,
         session_id: str | None = None,
         output_base_dir: str | Path = "data/output/sessions",
