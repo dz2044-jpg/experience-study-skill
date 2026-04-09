@@ -708,6 +708,66 @@ class UnifiedCopilot:
             lines.append(f"Profile summary: {', '.join(summary_bits)}.")
         return "\n".join(lines)
 
+    @staticmethod
+    def _format_sweep_value(value: Any) -> str:
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _analysis_summary_table(self, rows: list[dict[str, Any]]) -> str:
+        headers = [
+            "Cohort Dimension",
+            "Actual Deaths (MAC)",
+            "Expected (MEC)",
+            "A/E Ratio (Count)",
+            "A/E Ratio (Amount)",
+        ]
+        lines = [
+            "| " + " | ".join(headers) + " |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+        for row in rows:
+            values = [
+                str(row.get("Dimensions", "")),
+                self._format_sweep_value(row.get("Sum_MAC")),
+                self._format_sweep_value(row.get("Sum_MEC")),
+                self._format_sweep_value(row.get("AE_Ratio_Count")),
+                self._format_sweep_value(row.get("AE_Ratio_Amount")),
+            ]
+            lines.append("| " + " | ".join(values) + " |")
+        return "\n".join(lines)
+
+    def _analysis_summary_sections(
+        self,
+        result: dict[str, Any],
+        *,
+        include_intro: bool,
+    ) -> list[str]:
+        lines: list[str] = []
+        if include_intro:
+            lines.append(result["message"])
+
+        rows = result.get("data", {}).get("results", [])
+        if not rows:
+            return lines
+
+        if lines:
+            lines.append("")
+        lines.extend(
+            [
+                "Summary of Sweep Results",
+                "",
+                self._analysis_summary_table(rows),
+                "",
+                "Credibility interval detail is available in the chat explorer and generated report.",
+            ]
+        )
+        return lines
+
+    def _format_analysis_result(self, result: dict[str, Any]) -> str:
+        return "\n".join(self._analysis_summary_sections(result, include_intro=True))
+
     def _format_compact_result(self, result: dict[str, Any]) -> str:
         kind = result.get("kind")
         data = result.get("data", {})
@@ -749,6 +809,8 @@ class UnifiedCopilot:
                 lines = [self._format_schema_result(result)]
             elif result.get("kind") == "profile":
                 lines = [self._format_profile_result(result)]
+            elif result.get("kind") == "analysis":
+                lines = [self._format_analysis_result(result)]
             else:
                 lines = [self._format_compact_result(result)]
         else:
@@ -758,6 +820,15 @@ class UnifiedCopilot:
             if schema_results:
                 lines.append("")
                 lines.append(self._format_schema_result(schema_results[-1]))
+            analysis_results = [result for result in results if result.get("kind") == "analysis"]
+            if analysis_results:
+                lines.append("")
+                lines.extend(
+                    self._analysis_summary_sections(
+                        analysis_results[-1],
+                        include_intro=False,
+                    )
+                )
 
         next_steps = self._next_steps()
         if next_steps:

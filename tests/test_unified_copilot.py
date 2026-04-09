@@ -94,8 +94,14 @@ def test_analysis_only_request_runs_after_profile(
     list(copilot.process_message(f"Profile {sample_csv_path}"))
 
     events = list(copilot.process_message("Run a 1-way sweep on Gender."))
+    message = final_message(events)
 
-    assert "dimensional sweep" in final_message(events)
+    assert "Completed a 1-way dimensional sweep" in message
+    assert "Summary of Sweep Results" in message
+    assert "| Cohort Dimension | Actual Deaths (MAC) | Expected (MEC) | A/E Ratio (Count) | A/E Ratio (Amount) |" in message
+    assert "| Gender=M | 2.00 | 0.79 | 2.53 | 0.85 |" in message
+    assert "| Gender=F | 1.00 | 0.63 | 1.59 | 0.39 |" in message
+    assert "Credibility interval detail is available in the chat explorer and generated report." in message
     assert copilot.state.latest_sweep_ready is True
     assert copilot.state.latest_sweep_path is not None
     assert copilot.state.latest_sweep_path.exists()

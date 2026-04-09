@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 import webbrowser
 
 from core.copilot_agent import CopilotEvent, UnifiedCopilot
+import pandas as pd
 
 try:
     import streamlit as st
@@ -27,6 +29,36 @@ EMPTY_STATE_SUGGESTIONS = (
         "**Visualize**\n\n`Generate the combined report for the latest sweep.`",
     ),
 )
+
+_SWEEP_EXPLORER_COLUMN_ORDER = [
+    "Dimensions",
+    "Sum_MAC",
+    "Sum_MOC",
+    "Sum_MEC",
+    "Sum_MAF",
+    "Sum_MEF",
+    "AE_Ratio_Count",
+    "AE_Ratio_Amount",
+    "AE_Count_CI_Lower",
+    "AE_Count_CI_Upper",
+    "AE_Amount_CI_Lower",
+    "AE_Amount_CI_Upper",
+]
+
+_SWEEP_EXPLORER_COLUMN_LABELS = {
+    "Dimensions": "Cohort Dimension",
+    "Sum_MAC": "Actual Deaths (MAC)",
+    "Sum_MOC": "Exposure (MOC)",
+    "Sum_MEC": "Expected (MEC)",
+    "Sum_MAF": "Actual Amount (MAF)",
+    "Sum_MEF": "Expected Amount (MEF)",
+    "AE_Ratio_Count": "A/E Ratio (Count)",
+    "AE_Ratio_Amount": "A/E Ratio (Amount)",
+    "AE_Count_CI_Lower": "Count CI Lower",
+    "AE_Count_CI_Upper": "Count CI Upper",
+    "AE_Amount_CI_Lower": "Amount CI Lower",
+    "AE_Amount_CI_Upper": "Amount CI Upper",
+}
 
 
 def _require_streamlit() -> None:
@@ -77,6 +109,37 @@ def _render_visualization_card(visualization_path: str | None, widget_key_prefix
             )
 
 
+def _build_sweep_display_frame(sweep_results: list[dict[str, Any]] | None) -> pd.DataFrame:
+    if not sweep_results:
+        return pd.DataFrame()
+
+    display_df = pd.DataFrame(sweep_results)
+    available_columns = [
+        column for column in _SWEEP_EXPLORER_COLUMN_ORDER if column in display_df.columns
+    ]
+    if not available_columns:
+        return pd.DataFrame()
+
+    display_df = display_df.loc[:, available_columns].rename(columns=_SWEEP_EXPLORER_COLUMN_LABELS)
+    numeric_columns = display_df.select_dtypes(include="number").columns
+    if len(numeric_columns) > 0:
+        display_df = display_df.astype({column: "float64" for column in numeric_columns})
+        display_df.loc[:, numeric_columns] = display_df.loc[:, numeric_columns].round(2)
+    return display_df
+
+
+def _render_sweep_explorer(sweep_results: list[dict[str, Any]] | None) -> None:
+    _require_streamlit()
+    display_df = _build_sweep_display_frame(sweep_results)
+    if display_df.empty:
+        return
+
+    with st.container(border=True):
+        st.markdown("##### Sweep Explorer")
+        st.caption("Sort the table columns to compare cohorts across sweep metrics.")
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
+
+
 def _render_sidebar() -> bool:
     _require_streamlit()
     with st.sidebar:
@@ -96,10 +159,11 @@ def _consume_copilot_events(
     *,
     status_panel,
     response_placeholder,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, list[dict[str, Any]] | None]:
     _require_streamlit()
     rendered_response = ""
     latest_visualization_path: str | None = None
+    latest_sweep_results: list[dict[str, Any]] | None = None
     latest_status = "Processing request..."
 
     for event in events:
@@ -111,6 +175,9 @@ def _consume_copilot_events(
             status_panel.write(event.message)
         elif event.type == "tool_result":
             result = event.data.get("result", {})
+            if result.get("ok", False) and result.get("kind") == "analysis":
+                sweep_results = result.get("data", {}).get("results", [])
+                latest_sweep_results = sweep_results or None
             if not result.get("ok", False):
                 status_panel.write(event.message)
         elif event.type == "artifact_update":
@@ -129,7 +196,7 @@ def _consume_copilot_events(
                 response_placeholder.markdown(rendered_response)
 
     status_panel.update(label=latest_status, state="complete", expanded=False)
-    return rendered_response, latest_visualization_path
+    return rendered_response, latest_visualization_path, latest_sweep_results
 
 
 def render_app() -> None:
@@ -164,6 +231,7 @@ def render_app() -> None:
             st.markdown(item["prompt"])
         with st.chat_message("assistant"):
             st.markdown(item["response"])
+            _render_sweep_explorer(item.get("sweep_results"))
             _render_visualization_card(
                 item.get("visualization_path"),
                 widget_key_prefix=f"history-{index}",
@@ -182,11 +250,12 @@ def render_app() -> None:
         status_panel = st.status("Starting copilot...", expanded=True)
         response_placeholder = st.empty()
         events = list(st.session_state["copilot"].process_message(cleaned_prompt))
-        response, visualization_path = _consume_copilot_events(
+        response, visualization_path, sweep_results = _consume_copilot_events(
             events,
             status_panel=status_panel,
             response_placeholder=response_placeholder,
         )
+        _render_sweep_explorer(sweep_results)
         _render_visualization_card(visualization_path, widget_key_prefix="current")
 
     st.session_state["history"].append(
@@ -194,6 +263,7 @@ def render_app() -> None:
             "prompt": cleaned_prompt,
             "response": response,
             "visualization_path": visualization_path,
+            "sweep_results": sweep_results,
         }
     )
 
