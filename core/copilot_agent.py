@@ -174,6 +174,7 @@ class IntentSummary:
 class UnifiedCopilot:
     """Single-agent copilot backed by a self-contained skill package."""
 
+    _MAX_SWEEP_TOP_N = 20
     _PATH_RE = re.compile(r"((?:/|[A-Za-z]:[\\/]|data/)[\w./\\-]+\.(?:csv|parquet|xlsx))")
     _FILTER_PATTERNS = (
         r"\bwhere\s+(.+?)(?:,?\s+then\b|,?\s+rank\b|,?\s+sort\b|,?\s+using\b|[?.]|$)",
@@ -376,7 +377,8 @@ class UnifiedCopilot:
 
     def _extract_top_n(self, user_input: str) -> int:
         match = re.search(r"\btop\s+(\d+)\b", user_input.lower())
-        return int(match.group(1)) if match else 20
+        requested = int(match.group(1)) if match else self._MAX_SWEEP_TOP_N
+        return max(1, min(requested, self._MAX_SWEEP_TOP_N))
 
     def _extract_min_mac(self, user_input: str) -> int:
         lowered = user_input.lower()

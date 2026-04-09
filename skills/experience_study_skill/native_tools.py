@@ -43,6 +43,7 @@ _NEUTRAL_COLOR = "#1f4e79"
 _FIGURE_CONFIG = {"displaylogo": False, "responsive": True}
 _SCATTER_X_MAX = 3.0
 _TREEMAP_COLOR_MAX = 2.0
+_MAX_SWEEP_TOP_N = 20
 
 
 @dataclass(slots=True)
@@ -679,6 +680,8 @@ def run_dimensional_sweep(
     data_path: str | None = None,
     confidence_level: float = 0.95,
 ) -> dict[str, Any]:
+    top_n = max(1, min(top_n, _MAX_SWEEP_TOP_N))
+
     if sort_by not in VALID_SORT_COLUMNS:
         return _error_result(
             "validation_error",

@@ -124,6 +124,7 @@ class RunDimensionalSweepInput(BaseModel):
     top_n: int = Field(
         default=20,
         ge=1,
+        le=20,
         description="Maximum number of ranked cohort rows returned in the response payload.",
     )
     sort_by: Literal[
@@ -217,4 +218,3 @@ def get_tool_specs(enabled_tools: set[str] | None = None) -> list[dict[str, Any]
             }
         )
     return specs
-

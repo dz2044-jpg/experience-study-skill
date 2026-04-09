@@ -21,6 +21,12 @@ def test_analysis_requires_prepared_dataset(tmp_path: Path):
     assert "Profile a dataset first" in final_message(events)
 
 
+def test_extract_top_n_caps_large_requests(tmp_path: Path):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+
+    assert copilot._extract_top_n("Run a sweep and show the top 500 cohorts.") == 20
+
+
 def test_profile_only_request_creates_session_local_prepared_dataset(
     tmp_path: Path,
     sample_csv_path: Path,
