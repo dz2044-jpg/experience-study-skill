@@ -3,9 +3,38 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from core.copilot_agent import UnifiedCopilot
+from skills.experience_study_skill.native_tools import get_tool_handlers
+from skills.experience_study_skill.schemas import get_tool_specs
 from tests.conftest import final_message
+
+
+EXPECTED_PUBLIC_TOOL_NAMES = {
+    "profile_dataset",
+    "inspect_dataset_schema",
+    "run_actuarial_data_checks",
+    "create_categorical_bands",
+    "regroup_categorical_features",
+    "run_dimensional_sweep",
+    "generate_combined_report",
+}
+
+GOLDEN_SWEEP_COLUMNS = [
+    "Dimensions",
+    "Sum_MAC",
+    "Sum_MOC",
+    "Sum_MEC",
+    "Sum_MAF",
+    "Sum_MEF",
+    "AE_Ratio_Count",
+    "AE_Ratio_Amount",
+    "AE_Count_CI_Lower",
+    "AE_Count_CI_Upper",
+    "AE_Amount_CI_Lower",
+    "AE_Amount_CI_Upper",
+]
 
 
 class _FakeToolCall:
@@ -55,6 +84,15 @@ def test_extract_top_n_caps_large_requests(tmp_path: Path):
     copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
 
     assert copilot._extract_top_n("Run a sweep and show the top 500 cohorts.") == 20
+
+
+def test_public_tool_names_remain_stable():
+    exposed_schema_tool_names = {
+        spec["function"]["name"] for spec in get_tool_specs()
+    }
+
+    assert exposed_schema_tool_names == EXPECTED_PUBLIC_TOOL_NAMES
+    assert set(get_tool_handlers()) == EXPECTED_PUBLIC_TOOL_NAMES
 
 
 def test_profile_and_columns_request_profiles_then_inspects_prepared_dataset(
@@ -161,18 +199,92 @@ def test_full_pipeline_runs_in_order_with_session_local_artifacts(
 
     events = list(
         copilot.process_message(
-            f"Profile {sample_csv_path}, group Issue_Age into 3 equal-width bands, "
+            f"Profile {sample_csv_path}, inspect the schema columns, validate the data, "
+            "group Issue_Age into 3 equal-width bands, "
             "run a 1-way sweep on Gender, and generate the combined report."
         )
     )
 
+    tool_starts = [event.message for event in events if event.type == "tool_start"]
+    assert tool_starts == [
+        "Executing `profile_dataset`.",
+        "Executing `inspect_dataset_schema`.",
+        "Executing `run_actuarial_data_checks`.",
+        "Executing `create_categorical_bands`.",
+        "Executing `run_dimensional_sweep`.",
+        "Executing `generate_combined_report`.",
+    ]
+
+    tool_results = [event.data["result"] for event in events if event.type == "tool_result"]
+    validation_result = next(result for result in tool_results if result["kind"] == "validation")
+    analysis_result = next(result for result in tool_results if result["kind"] == "analysis")
+
+    assert validation_result["data"]["status"] == "PASS"
+    assert analysis_result["artifacts"]["sweep_output_path"].endswith(
+        "sweep_summary_1_gender.csv"
+    )
+
     message = final_message(events).lower()
     assert "prepared dataset" in message
+    assert "inspected the schema" in message
+    assert "actuarial validation completed" in message
     assert "dimensional sweep" in message
     assert "visualization report" in message
+
     assert copilot.state.prepared_dataset_ready is True
     assert copilot.state.latest_sweep_ready is True
     assert copilot.state.latest_visualization_ready is True
+
+    prepared_path = copilot.state.prepared_dataset_path
+    sweep_path = copilot.state.latest_sweep_path
+    visualization_path = copilot.state.latest_visualization_path
+    sweep_depth_path = copilot.state.latest_sweep_paths_by_depth[1]
+
+    assert prepared_path is not None
+    assert prepared_path.name == "analysis_inforce.parquet"
+    assert prepared_path.exists()
+    prepared_df = pd.read_parquet(prepared_path)
+    assert len(prepared_df) == 8
+    assert "Issue_Age_band" in prepared_df.columns
+
+    assert sweep_path is not None
+    assert sweep_path.name == "sweep_summary.csv"
+    assert sweep_path.exists()
+    assert sweep_depth_path.name == "sweep_summary_latest_1.csv"
+    assert sweep_depth_path.exists()
+
+    sweep_df = pd.read_csv(sweep_path)
+    assert list(sweep_df.columns) == GOLDEN_SWEEP_COLUMNS
+    assert len(sweep_df) == 2
+
+    sweep_by_dimension = sweep_df.set_index("Dimensions")
+    assert sweep_by_dimension.loc["Gender=M", "Sum_MAC"] == 2
+    assert sweep_by_dimension.loc["Gender=F", "Sum_MAC"] == 1
+    assert sweep_by_dimension.loc["Gender=M", "AE_Ratio_Count"] == pytest.approx(
+        2.5316455696202533
+    )
+    assert sweep_by_dimension.loc["Gender=M", "AE_Ratio_Amount"] == pytest.approx(
+        0.8517350157728707
+    )
+    assert sweep_by_dimension.loc["Gender=F", "AE_Ratio_Count"] == pytest.approx(
+        1.5873015873015872
+    )
+    assert sweep_by_dimension.loc["Gender=F", "AE_Ratio_Amount"] == pytest.approx(
+        0.39215686274509803
+    )
+    assert sweep_df[
+        [
+            "AE_Count_CI_Lower",
+            "AE_Count_CI_Upper",
+            "AE_Amount_CI_Lower",
+            "AE_Amount_CI_Upper",
+        ]
+    ].notna().all().all()
+
+    assert visualization_path is not None
+    assert visualization_path.name.startswith("combined_ae_report_")
+    assert visualization_path.suffix == ".html"
+    assert visualization_path.exists()
 
 
 def test_filtered_analysis_request_respects_filter_clause(
