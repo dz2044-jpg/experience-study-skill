@@ -150,7 +150,9 @@ def test_pure_schema_request_does_not_mutate_prepared_artifact_state(
     assert prepared_path is not None
     assert copilot.state.prepared_dataset_path == prepared_path
     assert copilot.state.prepared_dataset_ready is True
-    assert not any(event.type == "artifact_update" for event in events)
+    assert any(event.type == "artifact_update" for event in events)
+    assert copilot.state.methodology_log_path is not None
+    assert copilot.state.methodology_log_path.exists()
     assert "Columns in" in final_message(events)
 
 
@@ -286,6 +288,56 @@ def test_full_pipeline_runs_in_order_with_session_local_artifacts(
     assert visualization_path.suffix == ".html"
     assert visualization_path.exists()
 
+    methodology_log_path = copilot.state.methodology_log_path
+    artifact_manifest_path = copilot.state.artifact_manifest_path
+    assert copilot.state.audit_ready is True
+    assert methodology_log_path is not None
+    assert methodology_log_path.name == "methodology_log.json"
+    assert methodology_log_path.exists()
+    assert artifact_manifest_path is not None
+    assert artifact_manifest_path.name == "artifact_manifest.json"
+    assert artifact_manifest_path.exists()
+    assert copilot.state.latest_state_fingerprint is not None
+
+    methodology_log = json.loads(methodology_log_path.read_text(encoding="utf-8"))
+    step_names = [event["step_name"] for event in methodology_log["events"]]
+    assert step_names == [
+        "Source dataset profiled",
+        "Schema inspected",
+        "Validation checks run",
+        "Age bands created",
+        "Dimensional sweep run",
+        "Visualization generated",
+    ]
+    sweep_event = next(
+        event for event in methodology_log["events"] if event["tool_name"] == "run_dimensional_sweep"
+    )
+    assert sweep_event["parameters"]["depth"] == 1
+    assert sweep_event["parameters"]["selected_columns"] == ["Gender"]
+    assert sweep_event["parameters"]["filters"] == []
+    assert sweep_event["parameters"]["sort_by"] == "AE_Ratio_Amount"
+    assert sweep_event["parameters"]["min_mac"] == 0
+
+    manifest = json.loads(artifact_manifest_path.read_text(encoding="utf-8"))
+    manifest_paths = {Path(entry["path"]).name for entry in manifest["entries"]}
+    assert "analysis_inforce.parquet" in manifest_paths
+    assert "sweep_summary.csv" in manifest_paths
+    assert "sweep_summary_latest_1.csv" in manifest_paths
+    assert visualization_path.name in manifest_paths
+    assert "methodology_log.json" not in manifest_paths
+    assert "artifact_manifest.json" not in manifest_paths
+
+    prepared_entry = next(
+        entry
+        for entry in manifest["entries"]
+        if entry["artifact_type"] == "prepared_dataset" and entry["path"] == str(prepared_path)
+    )
+    assert prepared_entry["source_artifacts"][0]["artifact_type"] == "prepared_dataset"
+    assert (
+        prepared_entry["source_artifacts"][0]["content_hash"]
+        != prepared_entry["content_hash"]
+    )
+
 
 def test_filtered_analysis_request_respects_filter_clause(
     tmp_path: Path,
@@ -301,6 +353,26 @@ def test_filtered_analysis_request_respects_filter_clause(
     result_df = pd.read_csv(sweep_path)
     assert not result_df.empty
     assert "Dimensions" in result_df.columns
+
+
+def test_runtime_preserves_tool_result_when_audit_log_is_malformed(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    list(copilot.process_message(f"Profile {sample_csv_path}"))
+    assert copilot.state.methodology_log_path is not None
+    copilot.state.methodology_log_path.write_text("{not-json", encoding="utf-8")
+
+    events = list(copilot.process_message("Show me the schema for the current dataset."))
+
+    assert "Columns in" in final_message(events)
+    assert any(
+        "Audit recording skipped; deterministic tool result was preserved" in event.message
+        for event in events
+        if event.type == "status"
+    )
+    assert copilot.state.prepared_dataset_ready is True
 
 
 def test_failed_tool_call_surfaces_exact_error_without_retrying(

@@ -1,6 +1,6 @@
 # Experience Study AI Copilot Improvement Plan
 
-Last updated: May 3, 2026
+Last updated: May 4, 2026
 
 This is the canonical repository-tracked improvement plan for Experience Study AI Copilot. It replaces the local planning copy in `Downloads` as the source of truth for implementation sequencing, acceptance gates, and future PR scope.
 
@@ -42,6 +42,7 @@ Completed:
 - README now reflects the Experience Study AI Copilot positioning.
 - Governance docs now exist for product vision, trust boundary, data privacy, and roadmap.
 - Golden workflow tests have been strengthened around artifacts, output columns, known A/E values, and stable public tool names.
+- Methodology logging, artifact manifest tracking, and state fingerprinting now exist for deterministic workflow auditability.
 
 Important product framing:
 
@@ -58,7 +59,7 @@ Important product framing:
 | PR 2 | Golden Workflow Test Hardening | Completed in current working branch |
 | PR 3 | Small Runtime Extraction | Completed in current working branch |
 | PR 4 | Deterministic Tool Module Split | Completed in current working branch |
-| PR 5 | Methodology Log and Artifact Manifest | Planned |
+| PR 5 | Methodology Log and Artifact Manifest | Completed in current working branch |
 | PR 6 | AI Packet, Sanitization, Validation, and Fallback Layer | Planned |
 | PR 7 | AI Interpretation UI | Planned |
 | PR 8 | Report Drafting MVP | Planned |
@@ -579,6 +580,6 @@ New workflow handoff capabilities:
 
 ## Immediate Next Move
 
-PR 1, PR 2, PR 3, and PR 4 are complete in the current working branch. The next implementation slice is PR 5: Methodology Log and Artifact Manifest.
+PR 1, PR 2, PR 3, PR 4, and PR 5 are complete in the current working branch. The next implementation slice is PR 6: AI Packet, Sanitization, Validation, and Fallback Layer.
 
-Do not start AI packet work or report drafting until PR 5 is completed and all tests still pass.
+Do not start AI interpretation UI or report drafting until PR 6 is completed and all tests still pass.

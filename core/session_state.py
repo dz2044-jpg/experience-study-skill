@@ -21,10 +21,26 @@ class SessionArtifactState:
     latest_sweep_paths_by_depth: dict[int, Path] = field(default_factory=dict)
     latest_visualization_path: Path | None = None
     latest_visualization_ready: bool = False
+    methodology_log_path: Path | None = None
+    artifact_manifest_path: Path | None = None
+    audit_ready: bool = False
+    latest_state_fingerprint: str | None = None
 
     @property
     def output_dir(self) -> Path:
         return self.output_base_dir / self.session_id
+
+    @property
+    def audit_dir(self) -> Path:
+        return self.output_dir / "audit"
+
+    @property
+    def default_methodology_log_path(self) -> Path:
+        return self.audit_dir / "methodology_log.json"
+
+    @property
+    def default_artifact_manifest_path(self) -> Path:
+        return self.audit_dir / "artifact_manifest.json"
 
     def refresh(self) -> None:
         self.prepared_dataset_ready = bool(
@@ -39,6 +55,18 @@ class SessionArtifactState:
             for depth, path in self.latest_sweep_paths_by_depth.items()
             if path.exists()
         }
+        methodology_log_path = self.methodology_log_path or self.default_methodology_log_path
+        artifact_manifest_path = self.artifact_manifest_path or self.default_artifact_manifest_path
+        if methodology_log_path.exists():
+            self.methodology_log_path = methodology_log_path
+        if artifact_manifest_path.exists():
+            self.artifact_manifest_path = artifact_manifest_path
+        self.audit_ready = bool(
+            self.methodology_log_path
+            and self.methodology_log_path.exists()
+            and self.artifact_manifest_path
+            and self.artifact_manifest_path.exists()
+        )
 
     def apply_tool_result(self, result: dict[str, Any]) -> bool:
         artifacts = result.get("artifacts", {})
@@ -74,6 +102,27 @@ class SessionArtifactState:
             self.refresh()
         return changed
 
+    def apply_audit_result(
+        self,
+        *,
+        methodology_log_path: Path | None = None,
+        artifact_manifest_path: Path | None = None,
+        latest_state_fingerprint: str | None = None,
+    ) -> bool:
+        changed = False
+        if methodology_log_path and self.methodology_log_path != methodology_log_path:
+            self.methodology_log_path = methodology_log_path
+            changed = True
+        if artifact_manifest_path and self.artifact_manifest_path != artifact_manifest_path:
+            self.artifact_manifest_path = artifact_manifest_path
+            changed = True
+        if latest_state_fingerprint and self.latest_state_fingerprint != latest_state_fingerprint:
+            self.latest_state_fingerprint = latest_state_fingerprint
+            changed = True
+        if changed:
+            self.refresh()
+        return changed
+
     def to_prompt(self) -> str:
         self.refresh()
         available_depths = sorted(self.latest_sweep_paths_by_depth)
@@ -93,6 +142,10 @@ class SessionArtifactState:
             f"- available_sweep_depths: {available_depths}",
             f"- latest_visualization_ready: {self.latest_visualization_ready}",
             f"- latest_visualization_path: {self.latest_visualization_path or 'None'}",
+            f"- audit_ready: {self.audit_ready}",
+            f"- methodology_log_path: {self.methodology_log_path or 'None'}",
+            f"- artifact_manifest_path: {self.artifact_manifest_path or 'None'}",
+            f"- latest_state_fingerprint: {self.latest_state_fingerprint or 'None'}",
         ]
         return "\n".join(lines)
 
@@ -118,4 +171,12 @@ class SessionArtifactState:
                 if self.latest_visualization_path
                 else None
             ),
+            "audit_ready": self.audit_ready,
+            "methodology_log_path": (
+                str(self.methodology_log_path) if self.methodology_log_path else None
+            ),
+            "artifact_manifest_path": (
+                str(self.artifact_manifest_path) if self.artifact_manifest_path else None
+            ),
+            "latest_state_fingerprint": self.latest_state_fingerprint,
         }
