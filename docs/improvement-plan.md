@@ -44,6 +44,7 @@ Completed:
 - Golden workflow tests have been strengthened around artifacts, output columns, known A/E values, and stable public tool names.
 - Methodology logging, artifact manifest tracking, and state fingerprinting now exist for deterministic workflow auditability.
 - Internal AI packet construction, allowlist sanitization, validation, and deterministic fallback behavior now exist behind tested internal APIs.
+- The Streamlit app now has an AI Interpretation Panel for summarizing the latest sweep and explaining top or selected cohorts with evidence refs, source mode, caution flags, and freshness metadata.
 
 Important product framing:
 
@@ -62,7 +63,7 @@ Important product framing:
 | PR 4 | Deterministic Tool Module Split | Completed in current working branch |
 | PR 5 | Methodology Log and Artifact Manifest | Completed in current working branch |
 | PR 6 | AI Packet, Sanitization, Validation, and Fallback Layer | Completed in current working branch |
-| PR 7 | AI Interpretation UI | Planned |
+| PR 7 | AI Interpretation UI | Completed in current working branch |
 | PR 8 | Report Drafting MVP | Planned |
 | PR 9 | Human Editor and Export Package | Planned |
 | PR 10 | Prior Report Style Reference Layer | Planned |
@@ -593,6 +594,6 @@ New workflow handoff capabilities:
 
 ## Immediate Next Move
 
-PR 1, PR 2, PR 3, PR 4, PR 5, and PR 6 are complete in the current working branch. The next implementation slice is PR 7: AI Interpretation UI.
+PR 1, PR 2, PR 3, PR 4, PR 5, PR 6, and PR 7 are complete in the current working branch. The next implementation slice is PR 8: Report Drafting MVP.
 
-Do not start report drafting until the PR 7 AI interpretation UI is completed and all tests still pass.
+Do not start workflow export or prior-report style reference work until the PR 8 report drafting MVP is completed and all tests still pass.
