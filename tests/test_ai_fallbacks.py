@@ -143,6 +143,23 @@ def test_llm_success_evidence_refs_follow_action_context(tmp_path: Path):
     assert response.evidence_refs == ["row_0002"]
 
 
+def test_explain_cohort_invalid_evidence_ref_does_not_fall_back_to_top_rows(tmp_path: Path):
+    packet = build_latest_sweep_packet(sweep_path=_write_sweep(tmp_path / "sweep.csv"))
+    client = _FakeClient("This should not be used.")
+
+    response = run_ai_action(
+        action_name="explain_cohort",
+        packet=packet,
+        client=client,
+        action_context={"evidence_ref": "row_9999"},
+    )
+
+    assert response.source_mode == "fallback"
+    assert response.evidence_refs == []
+    assert "requested_evidence_ref_not_found" in response.caution_flags
+    assert "No cohort rows are available" in response.response_text
+
+
 def test_llm_success_compare_evidence_refs_are_selected_rows(tmp_path: Path):
     packet = build_latest_sweep_packet(sweep_path=_write_sweep(tmp_path / "sweep.csv"))
     client = _FakeClient("The selected cohorts differ on an amount basis.")

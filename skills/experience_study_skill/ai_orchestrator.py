@@ -6,6 +6,7 @@ from typing import Any
 
 from skills.experience_study_skill.ai_fallbacks import (
     build_fallback_response,
+    requested_evidence_ref_not_found,
     select_action_rows,
 )
 from skills.experience_study_skill.ai_models import (
@@ -42,6 +43,12 @@ def run_ai_action(
         raise ValueError(f"Unknown AI action: {action_name}")
 
     if client is None:
+        return build_fallback_response(
+            action_name=action_name,
+            packet=packet,
+            action_context=action_context,
+        )
+    if requested_evidence_ref_not_found(action_name, packet, action_context):
         return build_fallback_response(
             action_name=action_name,
             packet=packet,

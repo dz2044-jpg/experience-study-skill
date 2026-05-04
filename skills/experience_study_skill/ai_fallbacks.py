@@ -53,6 +53,8 @@ def select_action_rows(
         selected = [row for row in packet.rows if row.evidence_ref == requested_ref]
         if selected:
             return selected
+        if action_name == "explain_cohort":
+            return []
     if action_name == "compare_cohorts":
         return _rank_rows(packet)[:2]
     if action_name == "analyze_count_amount_divergence":
@@ -62,6 +64,19 @@ def select_action_rows(
             reverse=True,
         )[:3]
     return _rank_rows(packet)[:3]
+
+
+def requested_evidence_ref_not_found(
+    action_name: AIActionName,
+    packet: AISweepPacket,
+    action_context: dict[str, Any] | None,
+) -> bool:
+    if action_name != "explain_cohort":
+        return False
+    if not action_context or not action_context.get("evidence_ref"):
+        return False
+    requested_ref = str(action_context["evidence_ref"])
+    return not any(row.evidence_ref == requested_ref for row in packet.rows)
 
 
 def _collect_caution_flags(packet: AISweepPacket) -> list[str]:
@@ -86,6 +101,8 @@ def build_fallback_response(
     selected_rows = select_action_rows(action_name, packet, action_context)
     evidence_refs = [row.evidence_ref for row in selected_rows]
     caution_flags = _collect_caution_flags(packet)
+    if requested_evidence_ref_not_found(action_name, packet, action_context):
+        caution_flags.append("requested_evidence_ref_not_found")
     if validation and validation.blocked_issues:
         caution_flags.extend(issue.code for issue in validation.blocked_issues)
     caution_flags = list(dict.fromkeys(caution_flags))
