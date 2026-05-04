@@ -14,6 +14,7 @@ from core.methodology_log import (
     append_methodology_event,
     read_methodology_log,
 )
+from skills.experience_study_skill.ai_models import AI_SWEEP_PACKET_SCHEMA_VERSION
 
 
 def test_methodology_log_appends_events_in_order(tmp_path: Path):
@@ -127,7 +128,7 @@ def test_state_fingerprint_is_stable_for_key_order_and_changes_for_source_hash()
         "depth": 2,
         "sort_by": "AE_Ratio_Amount",
         "min_mac": 1,
-        "packet_schema_version": "pre_ai_v0",
+        "packet_schema_version": AI_SWEEP_PACKET_SCHEMA_VERSION,
         "skill_name": "experience-study-skill",
         "skill_version": "1.0.0",
     }

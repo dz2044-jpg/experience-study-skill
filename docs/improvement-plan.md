@@ -43,6 +43,7 @@ Completed:
 - Governance docs now exist for product vision, trust boundary, data privacy, and roadmap.
 - Golden workflow tests have been strengthened around artifacts, output columns, known A/E values, and stable public tool names.
 - Methodology logging, artifact manifest tracking, and state fingerprinting now exist for deterministic workflow auditability.
+- Internal AI packet construction, allowlist sanitization, validation, and deterministic fallback behavior now exist behind tested internal APIs.
 
 Important product framing:
 
@@ -60,7 +61,7 @@ Important product framing:
 | PR 3 | Small Runtime Extraction | Completed in current working branch |
 | PR 4 | Deterministic Tool Module Split | Completed in current working branch |
 | PR 5 | Methodology Log and Artifact Manifest | Completed in current working branch |
-| PR 6 | AI Packet, Sanitization, Validation, and Fallback Layer | Planned |
+| PR 6 | AI Packet, Sanitization, Validation, and Fallback Layer | Completed in current working branch |
 | PR 7 | AI Interpretation UI | Planned |
 | PR 8 | Report Drafting MVP | Planned |
 | PR 9 | Human Editor and Export Package | Planned |
@@ -335,10 +336,20 @@ Strong privacy rule:
 
 Rare-cohort masking:
 
+- AI interpretation uses a positive-claims default and masks cohorts with `Sum_MAC < 1` unless explicitly overridden.
+- User requests using `min_mac >= N` map to threshold `N`; requests using `min_mac > N` map to threshold `N + 1` because deterministic sweep filtering uses `Sum_MAC >= min_mac`.
+- Manifest `min_mac` can raise the AI masking threshold but does not lower the default below `1` unless the user explicitly requests no volume masking.
+- Masking only applies to rows present in the sweep artifact; the packet builder does not invent rows already filtered out by deterministic sweep settings.
 - Suppress detailed cohort labels when cohort volume is too small.
 - Mark rows as low credibility.
 - Prevent AI from over-interpreting low-credibility results.
 - Allow only aggregate or cautionary discussion.
+
+Sensitive dimension handling:
+
+- Sensitive/disallowed dimension matching is token-aware, not naive substring matching.
+- Dimension parsing splits on exact ` | ` first, then splits each part on the first `=`.
+- Sensitive dimension matches mask the full `Dimensions` label and do not preserve detailed sensitive cohort values in the AI packet.
 
 AI validation layer should block unsupported claims:
 
@@ -356,6 +367,7 @@ Acceptance gate:
 - No raw row-level data reaches the packet.
 - Fallback response works when LLM is unavailable.
 - Tests cover privacy behavior.
+- Public deterministic tool names remain unchanged.
 
 ## Phase 7 - AI Interpretation UI
 
@@ -580,6 +592,6 @@ New workflow handoff capabilities:
 
 ## Immediate Next Move
 
-PR 1, PR 2, PR 3, PR 4, and PR 5 are complete in the current working branch. The next implementation slice is PR 6: AI Packet, Sanitization, Validation, and Fallback Layer.
+PR 1, PR 2, PR 3, PR 4, PR 5, and PR 6 are complete in the current working branch. The next implementation slice is PR 7: AI Interpretation UI.
 
-Do not start AI interpretation UI or report drafting until PR 6 is completed and all tests still pass.
+Do not start report drafting until the PR 7 AI interpretation UI is completed and all tests still pass.

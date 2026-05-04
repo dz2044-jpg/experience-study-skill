@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from core.copilot_agent import UnifiedCopilot
+from skills.experience_study_skill.ai_models import AI_SWEEP_PACKET_SCHEMA_VERSION
 from skills.experience_study_skill.native_tools import get_tool_handlers
 from skills.experience_study_skill.schemas import get_tool_specs
 from tests.conftest import final_message
@@ -320,6 +321,7 @@ def test_full_pipeline_runs_in_order_with_session_local_artifacts(
 
     manifest = json.loads(artifact_manifest_path.read_text(encoding="utf-8"))
     fingerprint_inputs = manifest["fingerprint_inputs"]
+    assert fingerprint_inputs["packet_schema_version"] == AI_SWEEP_PACKET_SCHEMA_VERSION
     assert fingerprint_inputs["depth"] == 1
     assert fingerprint_inputs["selected_columns"] == ["Gender"]
     assert fingerprint_inputs["sort_by"] == "AE_Ratio_Amount"

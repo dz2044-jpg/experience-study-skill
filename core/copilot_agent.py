@@ -30,6 +30,7 @@ from core.prerequisite_guard import (
 from core.response_formatter import ResponseFormatter
 from core.session_state import SessionArtifactState
 from core.skill_loader import LoadedSkill, load_skill
+from skills.experience_study_skill.ai_models import AI_SWEEP_PACKET_SCHEMA_VERSION
 
 
 EventType = Literal[
@@ -602,7 +603,7 @@ class UnifiedCopilot:
                 depth=parameters.get("depth"),
                 sort_by=parameters.get("sort_by"),
                 min_mac=parameters.get("min_mac"),
-                packet_schema_version="pre_ai_v0",
+                packet_schema_version=AI_SWEEP_PACKET_SCHEMA_VERSION,
                 skill_name=self.active_skill.name,
                 skill_version=self.active_skill.version,
             )
@@ -613,7 +614,7 @@ class UnifiedCopilot:
                 depth=parameters.get("depth"),
                 sort_by=parameters.get("sort_by"),
                 min_mac=parameters.get("min_mac"),
-                packet_schema_version="pre_ai_v0",
+                packet_schema_version=AI_SWEEP_PACKET_SCHEMA_VERSION,
                 skill_name=self.active_skill.name,
                 skill_version=self.active_skill.version,
             )
