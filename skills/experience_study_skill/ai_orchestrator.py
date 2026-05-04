@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from skills.experience_study_skill.ai_fallbacks import build_fallback_response
+from skills.experience_study_skill.ai_fallbacks import (
+    build_fallback_response,
+    select_action_rows,
+)
 from skills.experience_study_skill.ai_models import (
     AIActionName,
     AIActionResponse,
@@ -82,7 +85,8 @@ def run_ai_action(
             action_context=action_context,
         )
 
-    evidence_refs = [row.evidence_ref for row in packet.rows]
+    selected_rows = select_action_rows(action_name, packet, action_context)
+    evidence_refs = [row.evidence_ref for row in selected_rows]
     return AIActionResponse(
         action_name=action_name,
         source_mode="llm",

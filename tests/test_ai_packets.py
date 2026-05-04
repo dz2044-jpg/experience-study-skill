@@ -168,6 +168,55 @@ def test_packet_json_excludes_sensitive_field_names_and_raw_values(tmp_path: Pat
     }
 
 
+@pytest.mark.parametrize(
+    ("dimensions", "forbidden_value"),
+    [
+        ("Policy_Number=P001", "P001"),
+        ("Applicant_ID=A123", "A123"),
+        ("Member_ID=M789", "M789"),
+        ("Certificate_Number=C456", "C456"),
+        ("Account_Number=ABC123", "ABC123"),
+    ],
+)
+def test_packet_masks_realistic_identifier_dimension_columns(
+    tmp_path: Path,
+    dimensions: str,
+    forbidden_value: str,
+):
+    sweep_path = _write_sweep(
+        tmp_path / "sweep_summary.csv",
+        [_sweep_row(dimensions, mac=2)],
+    )
+
+    packet = build_latest_sweep_packet(sweep_path=sweep_path)
+
+    packet_json = packet.model_dump_json()
+    assert dimensions.split("=", 1)[0] not in packet_json
+    assert forbidden_value not in packet_json
+    assert packet.rows[0].Dimensions == "[masked cohort label]"
+    assert packet.rows[0].Dimension_Columns == ["[masked dimension]"]
+    assert packet.rows[0].masking_reason == "sensitive_or_disallowed_dimension"
+
+
+def test_benign_dimension_columns_remain_unmasked(tmp_path: Path):
+    benign_dimensions = [
+        "Segment=Retail",
+        "Region=West",
+        "Group=A",
+        "Duration=1",
+        "Risk_Class=Preferred",
+    ]
+    sweep_path = _write_sweep(
+        tmp_path / "sweep_summary.csv",
+        [_sweep_row(dimensions, mac=2) for dimensions in benign_dimensions],
+    )
+
+    packet = build_latest_sweep_packet(sweep_path=sweep_path)
+
+    assert [row.Dimensions for row in packet.rows] == benign_dimensions
+    assert all(row.masking_reason is None for row in packet.rows)
+
+
 def test_sensitive_dimension_matching_is_token_aware(tmp_path: Path):
     sweep_path = _write_sweep(
         tmp_path / "sweep_summary.csv",

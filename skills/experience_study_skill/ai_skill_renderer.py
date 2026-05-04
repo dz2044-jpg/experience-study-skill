@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from skills.experience_study_skill.ai_models import AIActionName, AISweepPacket
@@ -18,7 +19,9 @@ def render_action_prompt(
     """Render a prompt with action Markdown, packet JSON, and optional context."""
 
     action = load_ai_action(action_name)
-    packet_json = packet.model_dump_json(indent=2)
+    packet_payload = packet.model_dump(mode="json", exclude={"source_artifact_path"})
+    packet_payload["source_artifact_ref"] = Path(packet.source_artifact_path).name
+    packet_json = json.dumps(packet_payload, indent=2, sort_keys=True)
     context_json = json.dumps(action_context or {}, indent=2, sort_keys=True)
     return "\n\n".join(
         [

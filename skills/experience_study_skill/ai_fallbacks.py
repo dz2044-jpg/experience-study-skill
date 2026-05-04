@@ -41,7 +41,7 @@ def _cohort_line(row: AICohortRow) -> str:
     )
 
 
-def _select_rows(
+def select_action_rows(
     action_name: AIActionName,
     packet: AISweepPacket,
     action_context: dict[str, Any] | None,
@@ -83,7 +83,7 @@ def build_fallback_response(
 ) -> AIActionResponse:
     """Return a safe deterministic response when LLM output is unavailable or blocked."""
 
-    selected_rows = _select_rows(action_name, packet, action_context)
+    selected_rows = select_action_rows(action_name, packet, action_context)
     evidence_refs = [row.evidence_ref for row in selected_rows]
     caution_flags = _collect_caution_flags(packet)
     if validation and validation.blocked_issues:

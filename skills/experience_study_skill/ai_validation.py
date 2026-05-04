@@ -14,13 +14,25 @@ _BLOCKING_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
     (
         "unsupported_causal_claim",
         "Causal conclusions are not supported by the deterministic packet.",
-        re.compile(r"\b(caused|causes|cause of|due to|driven by|driver of|resulted in)\b", re.IGNORECASE),
+        re.compile(
+            r"\b("
+            r"caused|causes|cause of|due to|driven by|driver of|key driver|"
+            r"resulted in|proves|conclusive"
+            r")\b",
+            re.IGNORECASE,
+        ),
     ),
     (
         "pricing_recommendation",
         "Pricing recommendations are outside the AI interpretation boundary.",
         re.compile(
-            r"\b((change|raise|lower|increase|decrease|adjust)\s+pricing|pricing\s+(should|must|needs?))\b",
+            r"\b("
+            r"(change|raise|lower|increase|decrease|adjust)\s+pricing|"
+            r"pricing\s+(should|must|needs?)|"
+            r"recommend\w*\s+\w*\s*premiums?|"
+            r"increase\w*\s+premiums?|decrease\w*\s+premiums?|"
+            r"rates?\s+should|rate action"
+            r")\b",
             re.IGNORECASE,
         ),
     ),
@@ -28,7 +40,10 @@ _BLOCKING_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
         "underwriting_recommendation",
         "Underwriting strategy recommendations are outside the AI interpretation boundary.",
         re.compile(
-            r"\b(underwriting\s+(should|must|needs?|tighten|loosen|change|adjust))\b",
+            r"\b("
+            r"underwriting\s+(should|must|needs?|tighten|loosen|change|adjust|guidelines)|"
+            r"tighten\w*\s+underwriting|loosen\w*\s+underwriting"
+            r")\b",
             re.IGNORECASE,
         ),
     ),
@@ -36,7 +51,10 @@ _BLOCKING_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
         "assumption_change_recommendation",
         "Assumption changes require actuarial review and cannot be recommended by AI.",
         re.compile(
-            r"\b(assumptions?\s+(should|must|needs?|be updated|change|changed|update)|change\s+assumptions?)\b",
+            r"\b("
+            r"assumptions?\s+(should|must|needs?|be updated|change|changed|update)|"
+            r"change\s+assumptions?|assumption is inadequate"
+            r")\b",
             re.IGNORECASE,
         ),
     ),

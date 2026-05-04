@@ -350,6 +350,7 @@ Sensitive dimension handling:
 - Sensitive/disallowed dimension matching is token-aware, not naive substring matching.
 - Dimension parsing splits on exact ` | ` first, then splits each part on the first `=`.
 - Sensitive dimension matches mask the full `Dimensions` label and do not preserve detailed sensitive cohort values in the AI packet.
+- The AI packet builder is not a general-purpose PII scanner; upstream workflow controls should prevent row-level identifiers from becoming benign sweep dimensions.
 
 AI validation layer should block unsupported claims:
 
