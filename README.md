@@ -2,7 +2,7 @@
 
 Experience Study AI Copilot is an actuarial workflow copilot for first-draft experience study analysis. It helps actuaries move from source data to deterministic Actual-to-Expected (A/E) outputs, interpretation-ready exhibits, and report-ready draft language while preserving a clear human review boundary.
 
-The app currently supports deterministic data profiling, schema inspection, actuarial data validation, feature engineering, dimensional A/E sweeps, and combined visualization reports. Future phases add methodology logs, artifact manifests, sanitized AI interpretation packets, report drafting, and export packages.
+The app currently supports deterministic data profiling, schema inspection, actuarial data validation, feature engineering, dimensional A/E sweeps, combined visualization reports, methodology logs, artifact manifests, sanitized AI interpretation packets, and an AI Interpretation Panel. Future phases add report drafting and export packages.
 
 ## Trust Boundary
 
@@ -32,9 +32,9 @@ The Streamlit app provides a chat-style interface over this workflow and stores 
 
 ## AI And Privacy Direction
 
-The planned AI layer should interpret only validated, aggregated, cohort-level outputs. It must not receive raw row-level data, policy-level rows, claim-level rows, names, DOBs, addresses, emails, phone numbers, SSNs, or unapproved source columns.
+The AI interpretation layer should interpret only validated, aggregated, cohort-level outputs. It must not receive raw row-level data, policy-level rows, claim-level rows, names, DOBs, addresses, emails, phone numbers, SSNs, or unapproved source columns.
 
-Future AI packet builders should use allowlist-based sanitization and rare-cohort masking before any LLM-backed interpretation or drafting.
+AI packet builders use allowlist-based sanitization and rare-cohort masking before any LLM-backed interpretation or drafting.
 
 See [docs/data-privacy.md](docs/data-privacy.md) for the privacy rules.
 

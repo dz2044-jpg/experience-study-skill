@@ -156,6 +156,25 @@ def test_fallback_planner_preserves_top_n_cap_and_full_plan_order(tmp_path: Path
     ]
 
 
+def test_fallback_planner_separates_min_mac_phrase_from_selected_columns(tmp_path: Path):
+    state = SessionArtifactState(session_id="session-a", output_base_dir=tmp_path)
+    planner = FallbackPlanner(state)
+
+    one_way_args = planner._extract_sweep_args(
+        "Run a 1-way sweep on Gender with at least 1 deaths."
+    )
+    two_way_args = planner._extract_sweep_args(
+        "Run a 2-way sweep on Gender and Risk_Class with at least 1 deaths."
+    )
+
+    assert one_way_args["depth"] == 1
+    assert one_way_args["selected_columns"] == ["Gender"]
+    assert one_way_args["min_mac"] == 1
+    assert two_way_args["depth"] == 2
+    assert two_way_args["selected_columns"] == ["Gender", "Risk_Class"]
+    assert two_way_args["min_mac"] == 1
+
+
 def test_deterministic_fallback_event_order_remains_stable(
     tmp_path: Path,
     sample_csv_path: Path,

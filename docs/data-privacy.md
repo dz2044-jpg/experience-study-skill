@@ -31,4 +31,4 @@ Rare cohorts should be masked or suppressed before AI interpretation when volume
 
 ## Audit Expectation
 
-Future AI packet builders should be test-covered to prove that raw row-level data and sensitive identifiers do not reach the LLM packet. Privacy must be enforced by code and tests, not only by documentation.
+AI packet builders should stay test-covered to prove that raw row-level data and sensitive identifiers do not reach the LLM packet. Privacy must be enforced by code and tests, not only by documentation.

@@ -419,6 +419,53 @@ def test_filtered_analysis_request_respects_filter_clause(
     assert "Dimensions" in result_df.columns
 
 
+@pytest.mark.parametrize(
+    ("prompt", "expected_depth", "expected_columns"),
+    [
+        (
+            "Run a 1-way sweep on Gender with at least 1 deaths.",
+            1,
+            ["Gender"],
+        ),
+        (
+            "Run a 2-way sweep on Gender and Risk_Class with at least 1 deaths.",
+            2,
+            ["Gender", "Risk_Class"],
+        ),
+    ],
+)
+def test_min_mac_phrase_request_runs_without_absorbing_threshold_into_dimension(
+    tmp_path: Path,
+    sample_csv_path: Path,
+    prompt: str,
+    expected_depth: int,
+    expected_columns: list[str],
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    list(copilot.process_message(f"Profile {sample_csv_path}"))
+
+    events = list(copilot.process_message(prompt))
+
+    assert f"Completed a {expected_depth}-way dimensional sweep" in final_message(events)
+    sweep_path = copilot.state.latest_sweep_path
+    assert sweep_path is not None
+    result_df = pd.read_csv(sweep_path)
+    assert not result_df.empty
+    assert result_df["Sum_MAC"].ge(1).all()
+
+    methodology_log_path = copilot.state.methodology_log_path
+    assert methodology_log_path is not None
+    methodology_log = json.loads(methodology_log_path.read_text(encoding="utf-8"))
+    sweep_event = [
+        event
+        for event in methodology_log["events"]
+        if event["tool_name"] == "run_dimensional_sweep"
+    ][-1]
+    assert sweep_event["parameters"]["depth"] == expected_depth
+    assert sweep_event["parameters"]["selected_columns"] == expected_columns
+    assert sweep_event["parameters"]["min_mac"] == 1
+
+
 def test_runtime_preserves_tool_result_when_audit_log_is_malformed(
     tmp_path: Path,
     sample_csv_path: Path,

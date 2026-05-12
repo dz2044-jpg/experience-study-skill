@@ -37,6 +37,12 @@ class FallbackPlanner:
         "is": "=",
         "not": "!=",
     }
+    _SELECTED_COLUMN_STOP_PATTERN = (
+        r"(?:,?\s+(?:then|where|rank|sort|using)\b"
+        r"|,?\s+with\s+(?:at\s+least|min_mac\b)"
+        r"|,?\s+(?:and\s+)?(?:generate|create|show|visuali[sz]e|report)\b"
+        r"|[?.]|$)"
+    )
 
     def __init__(self, state: SessionArtifactState) -> None:
         self.state = state
@@ -93,11 +99,12 @@ class FallbackPlanner:
         return "count" if "count" in user_input.lower() else "amount"
 
     def _extract_selected_columns(self, user_input: str) -> list[str] | None:
+        stop = self._SELECTED_COLUMN_STOP_PATTERN
         patterns = [
-            r"\bbetween\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
-            r"\bacross\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
-            r"\bon\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
-            r"\bfor\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
+            rf"\bbetween\s+(.+?){stop}",
+            rf"\bacross\s+(.+?){stop}",
+            rf"\bon\s+(.+?){stop}",
+            rf"\bfor\s+(.+?){stop}",
         ]
         requested_segment: str | None = None
         for pattern in patterns:
