@@ -1,6 +1,6 @@
 # Experience Study AI Copilot Improvement Plan
 
-Last updated: May 4, 2026
+Last updated: May 12, 2026
 
 This is the canonical repository-tracked improvement plan for Experience Study AI Copilot. It replaces the local planning copy in `Downloads` as the source of truth for implementation sequencing, acceptance gates, and future PR scope.
 
@@ -67,6 +67,25 @@ Important product framing:
 | PR 8 | Report Drafting MVP | Planned |
 | PR 9 | Human Editor and Export Package | Planned |
 | PR 10 | Prior Report Style Reference Layer | Planned |
+| PR 11 | Guided Workflow UI | Planned |
+| PR 12 | Sweep Builder + Run History | Planned |
+| PR 13 | Cohort Review Queue | Planned |
+| PR 14 | Artifact Center + Methodology Timeline | Planned |
+| PR 15 | Structured AI Findings + Claim-Level Validation | Planned |
+
+## Roadmap Extension: Product Workflow PRs After Report Planning
+
+After PR 8-10, the roadmap adds five product/workflow PRs that make the app feel more like a governed actuarial workflow product rather than only a chat interface. These PRs should preserve deterministic A/E calculations, artifact names, public tool names, privacy boundaries, and existing AI fallback behavior.
+
+The added PRs are:
+
+1. Guided Workflow UI.
+2. Sweep Builder + Run History.
+3. Cohort Review Queue.
+4. Artifact Center + Methodology Timeline.
+5. Structured AI Findings + Claim-Level Validation.
+
+These are planned after PR 10 so the existing report drafting, editor/export, and prior-report style reference plan remains intact.
 
 ## Guiding Principles
 
@@ -520,6 +539,194 @@ Acceptance gate:
 - AI output is based on current deterministic packet, not prior report facts.
 - Tests or review checks confirm prior-year numbers are not copied into current report unless present in current packet.
 
+## Phase 11 - Guided Workflow UI
+
+Goal:
+Make the app feel like a guided actuarial workflow product instead of only a chat interface.
+
+Add a workflow status panel that mirrors the real artifact lifecycle:
+
+1. Dataset selected or profiled.
+2. Schema inspected.
+3. Validation completed.
+4. Feature engineering completed.
+5. Latest sweep available.
+6. Visualization available.
+7. AI interpretation available.
+8. Report draft available when PR 8 has been completed.
+
+Suggested UI behavior:
+
+- Show each step as Not started, Ready, Completed, Blocked, or Stale.
+- Use existing session state, artifact state, methodology log, artifact manifest, and fingerprint metadata where possible.
+- Keep the current chat interface available.
+- Add clear prerequisite messages for blocked steps.
+- Add a compact sidebar or top-of-page workflow progress component.
+- Do not change deterministic calculations, artifact names, public tool names, or output columns.
+
+Acceptance gate:
+
+- Workflow panel renders from current session/artifact state.
+- Completed, blocked, and stale states are visible to users.
+- Existing chat workflow still works.
+- AI Interpretation Panel behavior remains unchanged.
+- Tests cover workflow state derivation where feasible without requiring Streamlit browser testing.
+
+## Phase 12 - Sweep Builder + Run History
+
+Goal:
+Make dimensional sweep setup reproducible through structured UI controls and preserve sweep scenarios for comparison and reuse.
+
+Add a structured Sweep Builder panel for:
+
+- Sweep depth: 1-way and 2-way.
+- Dimension column selection.
+- Optional filters.
+- Minimum MAC threshold.
+- Ranking metric such as AE_Ratio_Amount or AE_Ratio_Count.
+- Top-N display setting if useful for UI display only.
+
+Add run history support:
+
+- Store each completed sweep as a session-scoped scenario.
+- Track scenario label, timestamp, selected columns, filters, depth, sort_by, min_mac, sweep artifact path, state fingerprint, and content hash.
+- Allow the user to mark one scenario as the active/baseline scenario.
+- Allow the user to restore a prior sweep scenario as the latest selected result when the artifact still exists.
+
+Important:
+
+- Sweep Builder should call existing deterministic sweep behavior rather than duplicating A/E logic.
+- Chat-based sweep requests should continue to work.
+- Run history should not store raw source data.
+
+Acceptance gate:
+
+- User can run at least a 1-way and 2-way sweep from structured controls.
+- Completed sweep scenarios appear in run history.
+- Restoring or selecting a prior scenario updates the UI context without changing the underlying artifact.
+- Existing chat-based sweep workflow still works.
+- Tests verify scenario metadata is recorded without raw row-level data.
+
+## Phase 13 - Cohort Review Queue
+
+Goal:
+Turn sweep results into an explicit actuarial review workflow.
+
+Create a session-scoped review queue from the latest active sweep scenario.
+
+Suggested queue categories:
+
+- Highest A/E Amount.
+- Highest A/E Count.
+- Largest count-vs-amount divergence.
+- High exposure with unusual result.
+- Low credibility or masked cohorts.
+- Below-expected cohorts.
+- Cohorts already used in AI interpretation.
+
+Suggested user actions:
+
+- Mark cohort as reviewed.
+- Mark cohort as needs follow-up.
+- Add reviewer note.
+- Add cohort to report candidate findings.
+- Remove cohort from report candidate findings.
+- Trigger existing explain_cohort action for a selected cohort.
+
+Important:
+
+- Review queue state should be session-scoped.
+- Review notes should not mutate deterministic artifacts.
+- Review status should reference evidence refs and artifact fingerprints.
+- Review queue should support later report drafting by identifying candidate findings.
+
+Acceptance gate:
+
+- Review queue is generated from the active sweep packet or sweep artifact.
+- User can mark review status for evidence refs.
+- User can identify candidate report findings.
+- Existing AI explanation flow can use the selected review queue cohort.
+- Stale queue state is detectable when the active sweep fingerprint changes.
+
+## Phase 14 - Artifact Center + Methodology Timeline
+
+Goal:
+Make auditability visible and useful inside the app.
+
+Add an Artifact Center that lists session artifacts:
+
+- Prepared dataset artifact.
+- Latest sweep summary CSV.
+- Combined visualization HTML.
+- Methodology log JSON.
+- Artifact manifest JSON.
+- Future report draft/export artifacts.
+
+For each artifact, show:
+
+- Artifact type.
+- Path or basename.
+- Generating tool.
+- Created timestamp where available.
+- Content hash where available.
+- Fresh/stale status when comparable.
+- Download or open action where appropriate.
+
+Add a Methodology Timeline:
+
+- Render methodology events in chronological order.
+- Show step name, tool name, selected parameters, and output artifact reference.
+- Keep technical JSON available in an expander rather than making it the primary UX.
+- Use existing methodology_log.json and artifact_manifest.json structures.
+- Missing audit files should produce helpful messages rather than errors.
+
+Acceptance gate:
+
+- Artifact Center renders from existing artifact state and manifest data.
+- Methodology Timeline renders from the methodology log.
+- Missing audit files produce helpful messages rather than errors.
+- No raw sensitive source data is exposed by default.
+- Tests cover artifact/timeline parsing helpers where feasible.
+
+## Phase 15 - Structured AI Findings + Claim-Level Validation
+
+Goal:
+Make AI outputs easier to review, test, and reuse in report drafting.
+
+Extend AI response contracts from mostly free text into structured findings.
+
+Suggested model:
+
+```python
+class AIFinding(BaseModel):
+    finding_text: str
+    evidence_refs: list[str]
+    metrics_used: list[str]
+    severity: Literal["info", "review", "important"]
+    caveats: list[str]
+    report_ready: bool
+```
+
+Here, claim-level validation means validation of individual AI assertions, not exposure of claim-level source records.
+
+Suggested behavior:
+
+- AI interpretation and report drafting should return structured findings alongside narrative text where useful.
+- Each finding should cite evidence refs from sanitized packets or current artifacts.
+- Each finding should identify the metrics used to support the statement.
+- Unsupported, stale, low-credibility, or heavily caveated findings should not be marked report-ready.
+- Fallback AI responses should use the same structured finding contract where feasible.
+- Structured findings should not include raw row-level data, claim-level records, policy-level records, or sensitive identifiers.
+
+Acceptance gate:
+
+- Structured findings parse and validate with explicit evidence refs and metrics_used values.
+- Invalid or missing evidence refs are rejected or clearly flagged.
+- Unsupported AI assertions are flagged before report drafting uses them.
+- Report drafting can consume report-ready findings without relying on free-text parsing.
+- Fallback responses preserve the structured contract where feasible.
+- Privacy tests or review checks confirm structured findings do not expose raw source records or sensitive identifiers.
+
 ## Updated PR Plan
 
 1. Governance Docs, Privacy, and README Polish.
@@ -551,6 +758,21 @@ Acceptance gate:
 
 10. Prior Report Style Reference Layer.
     Style-only prior report examples with no-verbatim-copy rules.
+
+11. Guided Workflow UI.
+    Workflow status panel that mirrors artifact lifecycle and freshness.
+
+12. Sweep Builder + Run History.
+    Structured sweep setup and session-scoped scenario history.
+
+13. Cohort Review Queue.
+    Explicit actuarial review workflow for sweep-derived cohorts.
+
+14. Artifact Center + Methodology Timeline.
+    In-app auditability for artifacts and methodology events.
+
+15. Structured AI Findings + Claim-Level Validation.
+    Evidence-backed AI finding objects with assertion-level validation.
 
 ## Final MVP Definition
 
@@ -597,3 +819,5 @@ New workflow handoff capabilities:
 PR 1, PR 2, PR 3, PR 4, PR 5, PR 6, and PR 7 are complete in the current working branch. The next implementation slice is PR 8: Report Drafting MVP.
 
 Do not start workflow export or prior-report style reference work until the PR 8 report drafting MVP is completed and all tests still pass.
+
+PR 11-15 are planned after PR 10 so the existing report drafting, editor/export, and prior-report style reference sequence remains intact.

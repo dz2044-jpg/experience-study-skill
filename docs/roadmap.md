@@ -41,3 +41,23 @@ Provide editable report sections and export options for Markdown and ZIP package
 ## 10. Prior Report Style Reference Layer
 
 Use approved or synthetic prior-report examples for style, structure, and tone only. Prior reports are not factual sources and should not be copied verbatim unless explicitly approved.
+
+## 11. Guided Workflow UI
+
+Add a compact workflow status panel that mirrors the artifact lifecycle, showing completed, blocked, and stale states while preserving the existing chat workflow.
+
+## 12. Sweep Builder + Run History
+
+Provide structured sweep controls for reproducible 1-way and 2-way sweeps, plus session-scoped scenario history for comparison and reuse.
+
+## 13. Cohort Review Queue
+
+Turn active sweep results into an explicit actuarial review queue with review status, notes, candidate report findings, and links to existing cohort explanation behavior.
+
+## 14. Artifact Center + Methodology Timeline
+
+Make auditability visible through an Artifact Center for session artifacts and a Methodology Timeline backed by existing log and manifest structures.
+
+## 15. Structured AI Findings + Claim-Level Validation
+
+Move AI outputs toward structured, evidence-backed finding objects with assertion-level validation before findings are reused in report drafting.
