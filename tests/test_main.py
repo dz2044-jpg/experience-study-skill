@@ -149,6 +149,93 @@ def _refresh_noop() -> None:
     return None
 
 
+def test_ai_workflow_snapshot_uses_readiness_without_building_packet(monkeypatch) -> None:
+    readiness_calls: dict[str, bool] = {}
+    monkeypatch.setattr(
+        main,
+        "st",
+        SimpleNamespace(session_state={"ai_interpretation_response": None}),
+    )
+
+    def fake_get_ai_panel_readiness(
+        state: object,
+        *,
+        include_file_hash: bool = True,
+        refresh_state: bool = True,
+    ) -> main._AIArtifactReadiness:
+        readiness_calls["include_file_hash"] = include_file_hash
+        readiness_calls["refresh_state"] = refresh_state
+        return main._AIArtifactReadiness(
+            checks={
+                "latest_sweep": True,
+                "artifact_manifest": True,
+                "state_fingerprint": True,
+                "sweep_manifest_hash": True,
+            },
+            state_fingerprint="state-a",
+            sweep_content_hash="hash-a",
+        )
+
+    monkeypatch.setattr(
+        main,
+        "_get_ai_panel_readiness",
+        fake_get_ai_panel_readiness,
+    )
+
+    def fail_if_packet_is_built(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Workflow sidebar must not build AI packets.")
+
+    monkeypatch.setattr(main, "_build_ai_packet_for_panel", fail_if_packet_is_built)
+
+    snapshot = main._build_ai_workflow_snapshot(SimpleNamespace(state=object()))
+
+    assert snapshot.ready is True
+    assert snapshot.has_response is False
+    assert snapshot.basis == "existing AI panel readiness"
+    assert readiness_calls == {"include_file_hash": False, "refresh_state": False}
+
+
+def test_ai_workflow_snapshot_marks_stored_response_stale_on_known_mismatch(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "st",
+        SimpleNamespace(
+            session_state={
+                "ai_interpretation_response": {
+                    "response_state_fingerprint": "state-a",
+                    "response_sweep_content_hash": "hash-a",
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_ai_panel_readiness",
+        lambda state, include_file_hash=True, refresh_state=True: main._AIArtifactReadiness(
+            checks={
+                "latest_sweep": True,
+                "artifact_manifest": True,
+                "state_fingerprint": True,
+                "sweep_manifest_hash": True,
+            },
+            state_fingerprint="state-b",
+            sweep_content_hash="hash-b",
+        ),
+    )
+
+    snapshot = main._build_ai_workflow_snapshot(SimpleNamespace(state=object()))
+
+    assert snapshot.ready is True
+    assert snapshot.has_response is True
+    assert snapshot.response_is_fresh is False
+    assert snapshot.freshness_mismatches == (
+        "state fingerprint",
+        "sweep content hash",
+    )
+
+
 def _example_packet(
     *,
     state_fingerprint: str = "state-a",

@@ -67,7 +67,7 @@ Important product framing:
 | PR 8 | Report Drafting MVP | Planned |
 | PR 9 | Human Editor and Export Package | Planned |
 | PR 10 | Prior Report Style Reference Layer | Planned |
-| PR 11 | Guided Workflow UI | Planned |
+| PR 11 | Guided Workflow UI | Completed early as read-only status layer |
 | PR 12 | Sweep Builder + Run History | Planned |
 | PR 13 | Cohort Review Queue | Planned |
 | PR 14 | Artifact Center + Methodology Timeline | Planned |
@@ -543,6 +543,11 @@ Acceptance gate:
 
 Goal:
 Make the app feel like a guided actuarial workflow product instead of only a chat interface.
+
+Implementation note:
+If implemented before PR 8-10, keep this phase as a read-only navigation/status layer.
+Hide the report draft step until report drafting, editor/export, and prior-report style
+contracts exist.
 
 Add a workflow status panel that mirrors the real artifact lifecycle:
 

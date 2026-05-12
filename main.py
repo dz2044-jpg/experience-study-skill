@@ -9,6 +9,11 @@ import webbrowser
 
 from core.artifact_manifest import file_sha256, read_artifact_manifest
 from core.copilot_agent import CopilotEvent, UnifiedCopilot
+from core.workflow_status import (
+    AIWorkflowSnapshot,
+    WorkflowStep,
+    derive_workflow_steps,
+)
 import pandas as pd
 from skills.experience_study_skill.ai_models import (
     AIActionName,
@@ -74,6 +79,14 @@ _AI_READINESS_LABELS = {
     "artifact_manifest": "Artifact manifest",
     "state_fingerprint": "State fingerprint",
     "sweep_manifest_hash": "Sweep manifest content hash",
+}
+
+_WORKFLOW_STATUS_LABELS = {
+    "not_started": "Not started",
+    "ready": "Ready",
+    "completed": "Completed",
+    "blocked": "Blocked",
+    "stale": "Stale",
 }
 
 
@@ -211,8 +224,13 @@ def _manifest_content_hash_for_path(
     return None
 
 
-def _get_ai_panel_readiness(state: Any) -> _AIArtifactReadiness:
-    if hasattr(state, "refresh"):
+def _get_ai_panel_readiness(
+    state: Any,
+    *,
+    include_file_hash: bool = True,
+    refresh_state: bool = True,
+) -> _AIArtifactReadiness:
+    if refresh_state and hasattr(state, "refresh"):
         state.refresh()
 
     sweep_path = getattr(state, "latest_sweep_path", None)
@@ -226,7 +244,7 @@ def _get_ai_panel_readiness(state: Any) -> _AIArtifactReadiness:
         artifact_manifest_path and artifact_manifest_path.exists()
     )
     actual_sweep_content_hash = None
-    if latest_sweep_ready and sweep_artifact_path:
+    if include_file_hash and latest_sweep_ready and sweep_artifact_path:
         try:
             actual_sweep_content_hash = file_sha256(sweep_artifact_path)
         except OSError:
@@ -622,9 +640,105 @@ def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
             _render_ai_response(stored_response_record, packet, readiness)
 
 
+def _ai_workflow_freshness_mismatches(
+    response_record: dict[str, Any],
+    readiness: _AIArtifactReadiness,
+) -> tuple[str, ...]:
+    comparisons = {
+        "state fingerprint": (
+            response_record.get("response_state_fingerprint"),
+            readiness.state_fingerprint,
+        ),
+        "sweep content hash": (
+            response_record.get("response_sweep_content_hash"),
+            readiness.sweep_content_hash,
+        ),
+    }
+    return tuple(
+        label
+        for label, (stored_value, current_value) in comparisons.items()
+        if not stored_value or not current_value or stored_value != current_value
+    )
+
+
+def _build_ai_workflow_snapshot(copilot: UnifiedCopilot) -> AIWorkflowSnapshot:
+    _require_streamlit()
+    try:
+        readiness = _get_ai_panel_readiness(
+            copilot.state,
+            include_file_hash=False,
+            refresh_state=False,
+        )
+    except (OSError, ValueError) as exc:
+        return AIWorkflowSnapshot(
+            ready=False,
+            detail=f"AI readiness unavailable ({type(exc).__name__}).",
+            basis="existing AI panel readiness",
+        )
+
+    stored_response_record = st.session_state.get("ai_interpretation_response")
+    has_response = isinstance(stored_response_record, dict)
+    freshness_mismatches: tuple[str, ...] = ()
+    response_is_fresh: bool | None = None
+    if has_response:
+        freshness_mismatches = _ai_workflow_freshness_mismatches(
+            stored_response_record,
+            readiness,
+        )
+        response_is_fresh = readiness.ready and not freshness_mismatches
+
+    if readiness.ready:
+        detail = (
+            "Stored AI response matches current sweep fingerprints."
+            if has_response and response_is_fresh
+            else "Existing AI panel readiness checks pass."
+        )
+    else:
+        missing = [
+            _AI_READINESS_LABELS.get(check_name, check_name)
+            for check_name, is_ready in readiness.checks.items()
+            if not is_ready
+        ]
+        detail = "Missing: " + ", ".join(missing) if missing else "AI panel is not ready."
+
+    return AIWorkflowSnapshot(
+        ready=readiness.ready,
+        readiness_checks=dict(readiness.checks),
+        has_response=has_response,
+        response_is_fresh=response_is_fresh,
+        freshness_mismatches=freshness_mismatches,
+        detail=detail,
+        basis="existing AI panel readiness",
+    )
+
+
+def _workflow_step_detail(step: WorkflowStep) -> str | None:
+    if step.status == "completed":
+        return None
+    if step.status in {"blocked", "stale"} and step.prerequisite_message:
+        return step.prerequisite_message
+    return step.detail or step.prerequisite_message
+
+
+def _render_workflow_panel(copilot: UnifiedCopilot) -> None:
+    _require_streamlit()
+    ai_snapshot = _build_ai_workflow_snapshot(copilot)
+    steps = derive_workflow_steps(copilot.state, ai_snapshot)
+
+    st.markdown("#### Workflow")
+    for step in steps:
+        status_label = _WORKFLOW_STATUS_LABELS[step.status]
+        st.markdown(f"**{step.label}** · `{status_label}`")
+        detail = _workflow_step_detail(step)
+        if detail:
+            st.caption(detail)
+
+
 def _render_sidebar() -> bool:
     _require_streamlit()
     with st.sidebar:
+        _render_workflow_panel(st.session_state["copilot"])
+        st.markdown("---")
         st.title("Copilot Controls")
         st.caption(f"Session: `{st.session_state['session_id']}`")
         if st.button("Clear Conversation", type="primary", use_container_width=True):

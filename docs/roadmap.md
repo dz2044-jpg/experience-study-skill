@@ -46,6 +46,10 @@ Use approved or synthetic prior-report examples for style, structure, and tone o
 
 Add a compact workflow status panel that mirrors the artifact lifecycle, showing completed, blocked, and stale states while preserving the existing chat workflow.
 
+Implementation note: PR 11 may be implemented early as a read-only navigation/status layer.
+When PR 8-10 report drafting, editor/export, and prior-report style contracts are not
+present, the workflow UI should hide the Report Draft step rather than stub unavailable behavior.
+
 ## 12. Sweep Builder + Run History
 
 Provide structured sweep controls for reproducible 1-way and 2-way sweeps, plus session-scoped scenario history for comparison and reuse.
