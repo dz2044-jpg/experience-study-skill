@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -60,10 +61,15 @@ class ResponseFormatter:
 
     @staticmethod
     def format_sweep_value(value: Any) -> str:
+        if value is None or value == "":
+            return "n/a"
         try:
-            return f"{float(value):.2f}"
+            numeric_value = float(value)
         except (TypeError, ValueError):
             return str(value)
+        if not math.isfinite(numeric_value):
+            return "n/a"
+        return f"{numeric_value:.2f}"
 
     def analysis_summary_table(self, rows: list[dict[str, Any]]) -> str:
         headers = [

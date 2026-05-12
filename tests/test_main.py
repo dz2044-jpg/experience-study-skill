@@ -97,6 +97,21 @@ class _FakeRenderCopilot:
         ]
 
 
+class _GeneratorRenderCopilot(_FakeRenderCopilot):
+    def process_message(self, user_input: str):
+        self.calls.append(f"process:{user_input}")
+
+        def events():
+            self.state.panel_ready = True
+            yield CopilotEvent(
+                "final",
+                message="done",
+                data={"artifact_state": {}},
+            )
+
+        return events()
+
+
 def _write_ai_sweep(path: Path) -> Path:
     pd.DataFrame(
         [
@@ -236,6 +251,47 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_on_known_mismatch(
     )
 
 
+def test_ai_workflow_snapshot_marks_stored_response_stale_when_sweep_state_is_cleared(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "st",
+        SimpleNamespace(
+            session_state={
+                "ai_interpretation_response": {
+                    "response_state_fingerprint": "state-a",
+                    "response_sweep_content_hash": "hash-a",
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_ai_panel_readiness",
+        lambda state, include_file_hash=True, refresh_state=True: main._AIArtifactReadiness(
+            checks={
+                "latest_sweep": False,
+                "artifact_manifest": True,
+                "state_fingerprint": False,
+                "sweep_manifest_hash": False,
+            },
+            state_fingerprint=None,
+            sweep_content_hash=None,
+        ),
+    )
+
+    snapshot = main._build_ai_workflow_snapshot(SimpleNamespace(state=object()))
+
+    assert snapshot.ready is False
+    assert snapshot.has_response is True
+    assert snapshot.response_is_fresh is False
+    assert snapshot.freshness_mismatches == (
+        "state fingerprint",
+        "sweep content hash",
+    )
+
+
 def _example_packet(
     *,
     state_fingerprint: str = "state-a",
@@ -309,6 +365,34 @@ def test_render_app_renders_ai_panel_after_current_chat_processing(monkeypatch) 
             "sweep_results": None,
         }
     ]
+
+
+def test_render_app_passes_copilot_event_iterable_without_materializing(monkeypatch) -> None:
+    calls: list[str] = []
+    copilot = _GeneratorRenderCopilot(calls)
+    fake_st = _FakeStreamlitApp(prompt=" Run sweep now ", copilot=copilot)
+
+    monkeypatch.setattr(main, "st", fake_st)
+    monkeypatch.setattr(main, "_render_sidebar", lambda: False)
+    monkeypatch.setattr(main, "_render_empty_state", lambda: None)
+    monkeypatch.setattr(main, "_render_sweep_explorer", lambda sweep_results: None)
+    monkeypatch.setattr(
+        main,
+        "_render_visualization_card",
+        lambda visualization_path, widget_key_prefix: None,
+    )
+    monkeypatch.setattr(main, "_render_ai_interpretation_panel", lambda panel_copilot: None)
+
+    def fake_consume(events, *, status_panel, response_placeholder):
+        calls.append(f"events_is_list:{isinstance(events, list)}")
+        rendered_events = list(events)
+        return rendered_events[-1].message, None, None
+
+    monkeypatch.setattr(main, "_consume_copilot_events", fake_consume)
+
+    main.render_app()
+
+    assert calls == ["process:Run sweep now", "events_is_list:False"]
 
 
 def test_render_app_renders_ai_panel_without_prompt(monkeypatch) -> None:
@@ -403,6 +487,26 @@ def test_consume_copilot_events_captures_analysis_rows(monkeypatch) -> None:
     assert sweep_results == rows
 
 
+def test_consume_copilot_events_accepts_generators(monkeypatch) -> None:
+    monkeypatch.setattr(main, "st", object())
+    status_panel = _FakeStatusPanel()
+    response_placeholder = _FakeResponsePlaceholder()
+
+    def events():
+        yield CopilotEvent("status", message="working")
+        yield CopilotEvent("text_delta", message="done")
+        yield CopilotEvent("final", message="done", data={"artifact_state": {}})
+
+    response, _, _ = main._consume_copilot_events(
+        events(),
+        status_panel=status_panel,
+        response_placeholder=response_placeholder,
+    )
+
+    assert response == "done"
+    assert response_placeholder.messages == ["done"]
+
+
 def test_build_sweep_display_frame_renames_and_rounds() -> None:
     display_df = main._build_sweep_display_frame(
         [
@@ -444,6 +548,33 @@ def test_build_sweep_display_frame_renames_and_rounds() -> None:
     assert row["A/E Ratio (Count)"] == 10.12
     assert row["Amount CI Upper"] == 2.44
     assert isinstance(display_df, pd.DataFrame)
+
+
+def test_build_sweep_display_frame_formats_invalid_values_as_na() -> None:
+    display_df = main._build_sweep_display_frame(
+        [
+            {
+                "Dimensions": "Segment=Invalid",
+                "Sum_MAC": 1,
+                "Sum_MOC": 1.0,
+                "Sum_MEC": 0.0,
+                "Sum_MAF": 100000.0,
+                "Sum_MEF": 0.0,
+                "AE_Ratio_Count": None,
+                "AE_Ratio_Amount": float("inf"),
+                "AE_Count_CI_Lower": "",
+                "AE_Count_CI_Upper": float("nan"),
+                "AE_Amount_CI_Lower": None,
+                "AE_Amount_CI_Upper": None,
+            }
+        ]
+    )
+
+    row = display_df.iloc[0].to_dict()
+    assert row["A/E Ratio (Count)"] == "n/a"
+    assert row["A/E Ratio (Amount)"] == "n/a"
+    assert row["Count CI Lower"] == "n/a"
+    assert row["Count CI Upper"] == "n/a"
 
 
 def test_ai_panel_readiness_reports_missing_artifacts_and_manifest_hash(tmp_path: Path) -> None:

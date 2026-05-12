@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +110,7 @@ def _numeric_or_none(value: Any, *, column: str, evidence_ref: str) -> tuple[flo
     if pd.isna(value):
         return None, None
     try:
-        return float(value), None
+        numeric_value = float(value)
     except (TypeError, ValueError):
         return (
             None,
@@ -119,6 +120,9 @@ def _numeric_or_none(value: Any, *, column: str, evidence_ref: str) -> tuple[flo
                 evidence_refs=[evidence_ref],
             ),
         )
+    if not math.isfinite(numeric_value):
+        return None, None
+    return numeric_value, None
 
 
 def _packet_fingerprint(packet: AISweepPacket) -> str:
@@ -249,8 +253,8 @@ def build_latest_sweep_packet(
                 Sum_MEC=float(numeric_values["Sum_MEC"] or 0.0),
                 Sum_MAF=float(numeric_values["Sum_MAF"] or 0.0),
                 Sum_MEF=float(numeric_values["Sum_MEF"] or 0.0),
-                AE_Ratio_Count=float(numeric_values["AE_Ratio_Count"] or 0.0),
-                AE_Ratio_Amount=float(numeric_values["AE_Ratio_Amount"] or 0.0),
+                AE_Ratio_Count=numeric_values["AE_Ratio_Count"],
+                AE_Ratio_Amount=numeric_values["AE_Ratio_Amount"],
                 AE_Count_CI_Lower=numeric_values["AE_Count_CI_Lower"],
                 AE_Count_CI_Upper=numeric_values["AE_Count_CI_Upper"],
                 AE_Amount_CI_Lower=numeric_values["AE_Amount_CI_Lower"],

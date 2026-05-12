@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 from pathlib import Path
 import re
 import shutil
 from typing import Any, Iterator, Literal
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from core.artifact_manifest import (
     build_state_fingerprint,
@@ -32,6 +35,8 @@ from core.session_state import SessionArtifactState
 from core.skill_loader import LoadedSkill, load_skill
 from skills.experience_study_skill.ai_models import AI_SWEEP_PACKET_SCHEMA_VERSION
 
+
+LOGGER = logging.getLogger(__name__)
 
 EventType = Literal[
     "status",
@@ -636,42 +641,176 @@ class UnifiedCopilot:
             )
         return audit_files_written or state_changed
 
-    def _execute_tool_call(
+    @staticmethod
+    def _runtime_error_result(
+        kind: str,
+        message: str,
+        *,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "kind": kind,
+            "message": message,
+            "artifacts": {},
+            "data": data or {},
+        }
+
+    @staticmethod
+    def _tool_result_event(result: dict[str, Any]) -> CopilotEvent:
+        return CopilotEvent(
+            "tool_result",
+            message=str(result.get("message", "Tool execution failed.")),
+            data={"result": result},
+        )
+
+    @staticmethod
+    def _validation_error_details(exc: ValidationError) -> list[dict[str, str]]:
+        details: list[dict[str, str]] = []
+        for error in exc.errors(include_url=False):
+            loc = ".".join(str(part) for part in error.get("loc", ()))
+            details.append(
+                {
+                    "field": loc or "<root>",
+                    "message": str(error.get("msg", "Invalid value.")),
+                    "type": str(error.get("type", "value_error")),
+                }
+            )
+        return details
+
+    def _tool_start_event(self, tool_name: str, args: dict[str, Any]) -> CopilotEvent:
+        return CopilotEvent(
+            "tool_start",
+            message=f"Executing `{tool_name}`.",
+            data={"args": args},
+        )
+
+    def _parse_tool_arguments(
+        self,
+        tool_name: str,
+        raw_arguments: str | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        try:
+            parsed_args = json.loads(raw_arguments or "{}")
+        except json.JSONDecodeError as exc:
+            LOGGER.warning(
+                "Malformed JSON arguments for tool `%s`: %s",
+                tool_name,
+                exc,
+            )
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Invalid tool arguments for `{tool_name}`. The model returned malformed JSON.",
+                data={"error_type": "malformed_json"},
+            )
+        if not isinstance(parsed_args, dict):
+            LOGGER.warning(
+                "Non-object JSON arguments for tool `%s`: %s",
+                tool_name,
+                type(parsed_args).__name__,
+            )
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Invalid tool arguments for `{tool_name}`. Tool arguments must be a JSON object.",
+                data={"error_type": "arguments_not_object"},
+            )
+        return parsed_args, None
+
+    def _validate_tool_args(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        handler = self.active_skill.tool_handlers.get(tool_name)
+        input_model = self.active_skill.tool_input_models.get(tool_name)
+        if handler is None or input_model is None:
+            LOGGER.warning("Unknown deterministic tool requested: `%s`.", tool_name)
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Tool `{tool_name}` is not available.",
+                data={"error_type": "unknown_tool"},
+            )
+
+        try:
+            validated_args = input_model.model_validate(args)
+        except ValidationError as exc:
+            details = self._validation_error_details(exc)
+            detail_text = "; ".join(
+                f"{detail['field']}: {detail['message']}" for detail in details[:3]
+            )
+            if len(details) > 3:
+                detail_text += f"; plus {len(details) - 3} more issue(s)"
+            LOGGER.warning(
+                "Invalid arguments for tool `%s`: %s",
+                tool_name,
+                details,
+            )
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Invalid arguments for `{tool_name}`: {detail_text}.",
+                data={"error_type": "schema_validation", "errors": details},
+            )
+
+        return validated_args.model_dump(), None
+
+    def _complete_tool_call(
         self,
         tool_name: str,
         args: dict[str, Any],
     ) -> tuple[dict[str, Any], list[CopilotEvent]]:
+        validated_args, validation_error = self._validate_tool_args(tool_name, args)
+        if validation_error is not None:
+            return validation_error, [self._tool_result_event(validation_error)]
+
+        assert validated_args is not None
         handler = self.active_skill.tool_handlers[tool_name]
         context = self._build_tool_context()
-        pre_call_sources = self._capture_audit_source_snapshot(args)
-        result = handler(args, context)
-        events: list[CopilotEvent] = [
-            CopilotEvent("tool_start", message=f"Executing `{tool_name}`.", data={"args": args})
-        ]
+        pre_call_sources = self._capture_audit_source_snapshot(validated_args)
+        try:
+            result = handler(validated_args, context)
+        except Exception as exc:
+            LOGGER.exception("Deterministic tool `%s` failed.", tool_name)
+            result = self._runtime_error_result(
+                "runtime_error",
+                f"Tool `{tool_name}` failed during deterministic execution. Review logs for diagnostics.",
+                data={
+                    "error_type": "handler_exception",
+                    "exception_type": type(exc).__name__,
+                },
+            )
+
+        events: list[CopilotEvent] = []
         for status_message in context.status_events:
             events.append(CopilotEvent("status", message=status_message))
-        events.append(CopilotEvent("tool_result", message=result["message"], data={"result": result}))
+        events.append(self._tool_result_event(result))
+        if not result.get("ok", False):
+            return result, events
+
         artifact_state_changed = self.state.apply_tool_result(result)
         audit_state_changed = False
-        if result.get("ok", False):
-            try:
-                audit_state_changed = self._record_audit_result(
-                    tool_name,
-                    args,
-                    pre_call_sources,
-                    result,
+        try:
+            audit_state_changed = self._record_audit_result(
+                tool_name,
+                validated_args,
+                pre_call_sources,
+                result,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning(
+                "Audit recording skipped after `%s`: %s",
+                tool_name,
+                exc,
+            )
+            self.state.refresh()
+            events.append(
+                CopilotEvent(
+                    "status",
+                    message=(
+                        "Audit recording skipped; deterministic tool result was preserved "
+                        f"({type(exc).__name__})."
+                    ),
                 )
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                self.state.refresh()
-                events.append(
-                    CopilotEvent(
-                        "status",
-                        message=(
-                            "Audit recording skipped; deterministic tool result was preserved "
-                            f"({type(exc).__name__})."
-                        ),
-                    )
-                )
+            )
         if artifact_state_changed or audit_state_changed:
             events.append(
                 CopilotEvent(
@@ -682,6 +821,16 @@ class UnifiedCopilot:
             )
         return result, events
 
+    def _execute_tool_call(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[CopilotEvent]]:
+        events = [self._tool_start_event(tool_name, args)]
+        result, remaining_events = self._complete_tool_call(tool_name, args)
+        events.extend(remaining_events)
+        return result, events
+
     def _fallback_process(self, user_input: str, intent: IntentSummary) -> Iterator[CopilotEvent]:
         plan, guidance = self._build_fallback_plan(user_input, intent)
         if guidance:
@@ -690,7 +839,8 @@ class UnifiedCopilot:
 
         tool_results: list[dict[str, Any]] = []
         for tool_name, args in plan:
-            result, events = self._execute_tool_call(tool_name, args)
+            yield self._tool_start_event(tool_name, args)
+            result, events = self._complete_tool_call(tool_name, args)
             for event in events:
                 yield event
             tool_results.append(result)
@@ -783,8 +933,17 @@ class UnifiedCopilot:
 
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
-                args = json.loads(tool_call.function.arguments or "{}")
-                result, events = self._execute_tool_call(tool_name, args)
+                args, parse_error = self._parse_tool_arguments(
+                    tool_name,
+                    tool_call.function.arguments,
+                )
+                yield self._tool_start_event(tool_name, args or {})
+                if parse_error is not None:
+                    result = parse_error
+                    events = [self._tool_result_event(result)]
+                else:
+                    assert args is not None
+                    result, events = self._complete_tool_call(tool_name, args)
                 for event in events:
                     yield event
                 tool_results.append(result)

@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import pytest
+
 from core.copilot_agent import UnifiedCopilot
+from core.session_state import SessionArtifactState
 from tests.conftest import final_message
 
 
@@ -66,3 +69,60 @@ def test_prompt_state_contract_exposes_readiness_flags_and_artifact_paths(
     assert f"- latest_sweep_path: {copilot.state.latest_sweep_path}" in prompt_state
     assert "- latest_sweep_paths_by_depth: {1:" in prompt_state
     assert "- latest_visualization_ready: False" in prompt_state
+
+
+@pytest.mark.parametrize("result_kind", ["profile", "feature_engineering"])
+def test_prepared_dataset_writes_invalidate_downstream_artifacts_but_preserve_audit_paths(
+    tmp_path: Path,
+    result_kind: str,
+):
+    state = SessionArtifactState(session_id="session-a", output_base_dir=tmp_path)
+    state.output_dir.mkdir(parents=True)
+    prepared_path = state.output_dir / "analysis_inforce.parquet"
+    sweep_path = state.output_dir / "sweep_summary.csv"
+    depth_path = state.output_dir / "sweep_summary_latest_1.csv"
+    visualization_path = state.output_dir / "combined_ae_report.html"
+    methodology_log_path = state.default_methodology_log_path
+    artifact_manifest_path = state.default_artifact_manifest_path
+    for path in (
+        prepared_path,
+        sweep_path,
+        depth_path,
+        visualization_path,
+        methodology_log_path,
+        artifact_manifest_path,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+
+    state.prepared_dataset_path = prepared_path
+    state.prepared_dataset_ready = True
+    state.latest_sweep_path = sweep_path
+    state.latest_sweep_ready = True
+    state.latest_sweep_paths_by_depth = {1: depth_path}
+    state.latest_visualization_path = visualization_path
+    state.latest_visualization_ready = True
+    state.methodology_log_path = methodology_log_path
+    state.artifact_manifest_path = artifact_manifest_path
+    state.latest_state_fingerprint = "state-a"
+
+    changed = state.apply_tool_result(
+        {
+            "ok": True,
+            "kind": result_kind,
+            "message": "prepared dataset updated",
+            "artifacts": {"prepared_dataset_path": str(prepared_path)},
+            "data": {},
+        }
+    )
+
+    assert changed is True
+    assert state.prepared_dataset_path == prepared_path
+    assert state.latest_sweep_path is None
+    assert state.latest_sweep_ready is False
+    assert state.latest_sweep_paths_by_depth == {}
+    assert state.latest_visualization_path is None
+    assert state.latest_visualization_ready is False
+    assert state.latest_state_fingerprint is None
+    assert state.methodology_log_path == methodology_log_path
+    assert state.artifact_manifest_path == artifact_manifest_path

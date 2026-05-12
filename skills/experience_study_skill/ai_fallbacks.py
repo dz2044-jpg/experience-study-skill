@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from skills.experience_study_skill.ai_baselines import (
@@ -20,11 +21,28 @@ from skills.experience_study_skill.ai_models import (
 def _format_number(value: float | None) -> str:
     if value is None:
         return "n/a"
+    if not math.isfinite(value):
+        return "n/a"
     return f"{value:.2f}"
 
 
+def _rank_metric_value(row: AICohortRow, metric: str) -> float:
+    value = getattr(row, metric)
+    if value is None or not math.isfinite(float(value)):
+        return float("-inf")
+    return float(value)
+
+
+def _divergence_rank_value(row: AICohortRow) -> float:
+    amount_value = _rank_metric_value(row, "AE_Ratio_Amount")
+    count_value = _rank_metric_value(row, "AE_Ratio_Count")
+    if amount_value == float("-inf") or count_value == float("-inf"):
+        return float("-inf")
+    return abs(amount_value - count_value)
+
+
 def _rank_rows(packet: AISweepPacket, metric: str = "AE_Ratio_Amount") -> list[AICohortRow]:
-    return sorted(packet.rows, key=lambda row: float(getattr(row, metric)), reverse=True)
+    return sorted(packet.rows, key=lambda row: _rank_metric_value(row, metric), reverse=True)
 
 
 def _cohort_line(row: AICohortRow) -> str:
@@ -60,7 +78,7 @@ def select_action_rows(
     if action_name == "analyze_count_amount_divergence":
         return sorted(
             packet.rows,
-            key=lambda row: abs(float(row.AE_Ratio_Amount) - float(row.AE_Ratio_Count)),
+            key=_divergence_rank_value,
             reverse=True,
         )[:3]
     return _rank_rows(packet)[:3]

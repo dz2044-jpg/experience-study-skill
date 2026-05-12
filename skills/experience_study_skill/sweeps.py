@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from itertools import combinations
+import math
 import re
 from typing import Any, Callable, Sequence
 
@@ -70,6 +71,75 @@ def _selected_dimensions(df: pd.DataFrame, selected_columns: list[str] | None) -
     return [
         column for column in df.columns if _is_categorical_dimension(df[column], column)
     ]
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(numeric_value) or not math.isfinite(numeric_value):
+        return None
+    return numeric_value
+
+
+def _positive_denominator(value: Any) -> float | None:
+    numeric_value = _finite_float(value)
+    if numeric_value is None or numeric_value <= 0:
+        return None
+    return numeric_value
+
+
+def _safe_ratio(numerator: Any, denominator: Any) -> float | None:
+    numerator_value = _finite_float(numerator)
+    denominator_value = _positive_denominator(denominator)
+    if numerator_value is None or denominator_value is None:
+        return None
+    return numerator_value / denominator_value
+
+
+def _finite_ci_value(value: Any) -> float | None:
+    return _finite_float(value)
+
+
+def _safe_count_ci(
+    row: pd.Series,
+    *,
+    confidence_level: float,
+) -> tuple[float | None, float | None]:
+    if _positive_denominator(row["Sum_MEC"]) is None:
+        return (None, None)
+    lower, upper = compute_ae_ci(
+        mac=row["Sum_MAC"],
+        moc=row["Sum_MOC"],
+        mec=row["Sum_MEC"],
+        confidence_level=confidence_level,
+    )
+    return (_finite_ci_value(lower), _finite_ci_value(upper))
+
+
+def _safe_amount_ci(
+    row: pd.Series,
+    *,
+    confidence_level: float,
+) -> tuple[float | None, float | None]:
+    if _positive_denominator(row["Sum_MEF"]) is None:
+        return (None, None)
+    lower, upper = compute_ae_ci_amount(
+        mac=row["Sum_MAC"],
+        moc=row["Sum_MOC"],
+        mec=row["Sum_MEC"],
+        actual_amount=row["Sum_MAF"],
+        expected_amount=row["Sum_MEF"],
+        confidence_level=confidence_level,
+    )
+    return (_finite_ci_value(lower), _finite_ci_value(upper))
+
+
+def _records_with_nulls(df: pd.DataFrame) -> list[dict[str, Any]]:
+    safe_df = df.replace([float("inf"), float("-inf")], pd.NA)
+    safe_df = safe_df.astype(object).where(pd.notna(safe_df), None)
+    return safe_df.to_dict(orient="records")
 
 
 def run_dimensional_sweep(
@@ -145,25 +215,25 @@ def run_dimensional_sweep(
         if grouped.empty:
             continue
 
-        grouped["AE_Ratio_Count"] = grouped["Sum_MAC"] / grouped["Sum_MEC"]
-        grouped["AE_Ratio_Amount"] = grouped["Sum_MAF"] / grouped["Sum_MEF"]
+        grouped["AE_Ratio_Count"] = grouped.apply(
+            lambda row: _safe_ratio(row["Sum_MAC"], row["Sum_MEC"]),
+            axis=1,
+        )
+        grouped["AE_Ratio_Amount"] = grouped.apply(
+            lambda row: _safe_ratio(row["Sum_MAF"], row["Sum_MEF"]),
+            axis=1,
+        )
 
         count_cis = grouped.apply(
-            lambda row: compute_ae_ci(
-                mac=row["Sum_MAC"],
-                moc=row["Sum_MOC"],
-                mec=row["Sum_MEC"],
+            lambda row: _safe_count_ci(
+                row,
                 confidence_level=confidence_level,
             ),
             axis=1,
         )
         amount_cis = grouped.apply(
-            lambda row: compute_ae_ci_amount(
-                mac=row["Sum_MAC"],
-                moc=row["Sum_MOC"],
-                mec=row["Sum_MEC"],
-                actual_amount=row["Sum_MAF"],
-                expected_amount=row["Sum_MEF"],
+            lambda row: _safe_amount_ci(
+                row,
                 confidence_level=confidence_level,
             ),
             axis=1,
@@ -187,12 +257,12 @@ def run_dimensional_sweep(
                     "Sum_MEC": float(row["Sum_MEC"]),
                     "Sum_MAF": float(row["Sum_MAF"]),
                     "Sum_MEF": float(row["Sum_MEF"]),
-                    "AE_Ratio_Count": float(row["AE_Ratio_Count"]),
-                    "AE_Ratio_Amount": float(row["AE_Ratio_Amount"]),
-                    "AE_Count_CI_Lower": row["AE_Count_CI_Lower"],
-                    "AE_Count_CI_Upper": row["AE_Count_CI_Upper"],
-                    "AE_Amount_CI_Lower": row["AE_Amount_CI_Lower"],
-                    "AE_Amount_CI_Upper": row["AE_Amount_CI_Upper"],
+                    "AE_Ratio_Count": _finite_float(row["AE_Ratio_Count"]),
+                    "AE_Ratio_Amount": _finite_float(row["AE_Ratio_Amount"]),
+                    "AE_Count_CI_Lower": _finite_ci_value(row["AE_Count_CI_Lower"]),
+                    "AE_Count_CI_Upper": _finite_ci_value(row["AE_Count_CI_Upper"]),
+                    "AE_Amount_CI_Lower": _finite_ci_value(row["AE_Amount_CI_Lower"]),
+                    "AE_Amount_CI_Upper": _finite_ci_value(row["AE_Amount_CI_Upper"]),
                 }
             )
 
@@ -204,7 +274,11 @@ def run_dimensional_sweep(
             data={"results": []},
         )
 
-    result_df = pd.DataFrame(all_results).sort_values(sort_by, ascending=False)
+    result_df = pd.DataFrame(all_results).sort_values(
+        sort_by,
+        ascending=False,
+        na_position="last",
+    )
     top_results = result_df.head(top_n)
     _ensure_output_dir(context)
 
@@ -231,5 +305,5 @@ def run_dimensional_sweep(
             "sweep_depth": depth,
             "sweep_depth_path": str(latest_depth_path),
         },
-        data={"results": top_results.to_dict(orient="records"), "depth": depth},
+        data={"results": _records_with_nulls(top_results), "depth": depth},
     )

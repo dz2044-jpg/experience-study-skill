@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 import webbrowser
 
 from core.artifact_manifest import file_sha256, read_artifact_manifest
@@ -170,10 +171,10 @@ def _build_sweep_display_frame(sweep_results: list[dict[str, Any]] | None) -> pd
         return pd.DataFrame()
 
     display_df = display_df.loc[:, available_columns].rename(columns=_SWEEP_EXPLORER_COLUMN_LABELS)
-    numeric_columns = display_df.select_dtypes(include="number").columns
-    if len(numeric_columns) > 0:
-        display_df = display_df.astype({column: "float64" for column in numeric_columns})
-        display_df.loc[:, numeric_columns] = display_df.loc[:, numeric_columns].round(2)
+    for column in display_df.columns:
+        if column == _SWEEP_EXPLORER_COLUMN_LABELS["Dimensions"]:
+            continue
+        display_df[column] = display_df[column].map(_format_display_number)
     return display_df
 
 
@@ -277,9 +278,16 @@ def _coerce_float(value: Any) -> float | None:
         numeric_value = float(value)
     except (TypeError, ValueError):
         return None
-    if pd.isna(numeric_value):
+    if pd.isna(numeric_value) or not math.isfinite(numeric_value):
         return None
     return numeric_value
+
+
+def _format_display_number(value: Any) -> float | str:
+    numeric_value = _coerce_float(value)
+    if numeric_value is None:
+        return "n/a"
+    return round(numeric_value, 2)
 
 
 def _format_ai_number(value: Any) -> str:
@@ -752,7 +760,7 @@ def _render_sidebar() -> bool:
 
 
 def _consume_copilot_events(
-    events: list[CopilotEvent],
+    events: Iterable[CopilotEvent],
     *,
     status_panel,
     response_placeholder,
@@ -846,9 +854,8 @@ def render_app() -> None:
         with st.chat_message("assistant"):
             status_panel = st.status("Starting copilot...", expanded=True)
             response_placeholder = st.empty()
-            events = list(st.session_state["copilot"].process_message(cleaned_prompt))
             response, visualization_path, sweep_results = _consume_copilot_events(
-                events,
+                st.session_state["copilot"].process_message(cleaned_prompt),
                 status_panel=status_panel,
                 response_placeholder=response_placeholder,
             )

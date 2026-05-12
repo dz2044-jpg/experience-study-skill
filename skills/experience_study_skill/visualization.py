@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from html import escape
+import math
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -62,7 +63,44 @@ def _required_columns(df: pd.DataFrame, columns: Sequence[str], data_path: str) 
         raise ValueError(f"Missing required columns in {data_path}: {missing}")
 
 
-def _build_scatter_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.Figure:
+def _finite_float(value: Any) -> float | None:
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(numeric_value) or not math.isfinite(numeric_value):
+        return None
+    return numeric_value
+
+
+def _finite_series(series: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    return numeric.where(numeric.map(lambda value: _finite_float(value) is not None))
+
+
+def _format_number(value: Any, *, decimals: int = 2) -> str:
+    numeric_value = _finite_float(value)
+    if numeric_value is None:
+        return "n/a"
+    return f"{numeric_value:,.{decimals}f}"
+
+
+def _format_percent(value: Any) -> str:
+    numeric_value = _finite_float(value)
+    if numeric_value is None:
+        return "n/a"
+    return f"{numeric_value:.1%}"
+
+
+def _format_ci(lower: Any, upper: Any) -> str:
+    lower_text = _format_percent(lower)
+    upper_text = _format_percent(upper)
+    if "n/a" in {lower_text, upper_text}:
+        return "n/a"
+    return f"{lower_text} - {upper_text}"
+
+
+def _prepare_metric_frame(df: pd.DataFrame, metric: str, data_path: str) -> pd.DataFrame:
     metric_columns = _metric_columns(metric)
     required = [
         "Dimensions",
@@ -74,15 +112,26 @@ def _build_scatter_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.F
         metric_columns["ci_high"],
     ]
     _required_columns(df, required, data_path)
-    prepared = df.copy().sort_values(metric_columns["ratio"], ascending=False)
-    prepared["display_ratio"] = prepared[metric_columns["ratio"]].clip(lower=0, upper=_SCATTER_X_MAX)
-    prepared["display_ci_low"] = prepared[metric_columns["ci_low"]].clip(lower=0, upper=_SCATTER_X_MAX)
-    prepared["display_ci_high"] = prepared[metric_columns["ci_high"]].clip(lower=0, upper=_SCATTER_X_MAX)
+    prepared = df.copy()
+    prepared["_ratio_numeric"] = _finite_series(prepared[metric_columns["ratio"]])
+    prepared["_ci_low_numeric"] = _finite_series(prepared[metric_columns["ci_low"]])
+    prepared["_ci_high_numeric"] = _finite_series(prepared[metric_columns["ci_high"]])
+    return prepared.sort_values("_ratio_numeric", ascending=False, na_position="last")
+
+
+def _build_scatter_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.Figure:
+    metric_columns = _metric_columns(metric)
+    prepared = _prepare_metric_frame(df, metric, data_path)
+    prepared["display_ratio"] = prepared["_ratio_numeric"].clip(lower=0, upper=_SCATTER_X_MAX)
+    prepared["display_ci_low"] = prepared["_ci_low_numeric"].clip(lower=0, upper=_SCATTER_X_MAX)
+    prepared["display_ci_high"] = prepared["_ci_high_numeric"].clip(lower=0, upper=_SCATTER_X_MAX)
+    prepared["display_ratio_text"] = prepared[metric_columns["ratio"]].map(_format_number)
 
     fig = go.Figure(
         go.Scatter(
             x=prepared["display_ratio"],
             y=prepared["Dimensions"],
+            customdata=prepared["display_ratio_text"],
             mode="markers",
             marker={
                 "color": _NEUTRAL_COLOR,
@@ -93,8 +142,12 @@ def _build_scatter_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.F
             error_x={
                 "type": "data",
                 "symmetric": False,
-                "array": (prepared["display_ci_high"] - prepared["display_ratio"]).clip(lower=0),
-                "arrayminus": (prepared["display_ratio"] - prepared["display_ci_low"]).clip(lower=0),
+                "array": (
+                    prepared["display_ci_high"] - prepared["display_ratio"]
+                ).clip(lower=0).fillna(0),
+                "arrayminus": (
+                    prepared["display_ratio"] - prepared["display_ci_low"]
+                ).clip(lower=0).fillna(0),
                 "visible": True,
                 "color": _NEUTRAL_COLOR,
                 "thickness": 1.4,
@@ -102,7 +155,7 @@ def _build_scatter_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.F
             hovertemplate=(
                 "<b>%{y}</b><br>"
                 f"{_ratio_label(metric)}: "
-                "%{x:.2f}<extra></extra>"
+                "%{customdata}<extra></extra>"
             ),
         )
     )
@@ -123,17 +176,7 @@ def _build_scatter_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.F
 
 def _build_table_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.Figure:
     metric_columns = _metric_columns(metric)
-    required = [
-        "Dimensions",
-        "Sum_MOC",
-        metric_columns["actual"],
-        metric_columns["expected"],
-        metric_columns["ratio"],
-        metric_columns["ci_low"],
-        metric_columns["ci_high"],
-    ]
-    _required_columns(df, required, data_path)
-    prepared = df.copy().sort_values(metric_columns["ratio"], ascending=False)
+    prepared = _prepare_metric_frame(df, metric, data_path)
     fig = go.Figure(
         go.Table(
             header={
@@ -152,13 +195,17 @@ def _build_table_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.Fig
             cells={
                 "values": [
                     prepared["Dimensions"],
-                    prepared["Sum_MOC"].map(lambda value: f"{float(value):,.2f}"),
-                    prepared[metric_columns["actual"]].map(lambda value: f"{float(value):,.2f}"),
-                    prepared[metric_columns["expected"]].map(lambda value: f"{float(value):,.2f}"),
-                    prepared[metric_columns["ratio"]].map(lambda value: f"{float(value):.2f}"),
-                    prepared[metric_columns["ci_low"]].map(lambda value: f"{float(value):.1%}")
-                    + " - "
-                    + prepared[metric_columns["ci_high"]].map(lambda value: f"{float(value):.1%}"),
+                    prepared["Sum_MOC"].map(_format_number),
+                    prepared[metric_columns["actual"]].map(_format_number),
+                    prepared[metric_columns["expected"]].map(_format_number),
+                    prepared[metric_columns["ratio"]].map(_format_number),
+                    [
+                        _format_ci(lower, upper)
+                        for lower, upper in zip(
+                            prepared[metric_columns["ci_low"]],
+                            prepared[metric_columns["ci_high"]],
+                        )
+                    ],
                 ],
                 "align": "left",
                 "fill_color": "#ffffff",
@@ -184,23 +231,29 @@ def _build_treemap_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.F
     value_column = "Sum_MOC" if metric == "count" else "Sum_MAF"
     required = ["Dimensions", metric_columns["ratio"], value_column]
     _required_columns(df, required, data_path)
+    prepared = df.copy()
+    prepared["_ratio_numeric"] = _finite_series(prepared[metric_columns["ratio"]])
 
     parents = []
     labels = []
     values = []
     colors = []
-    for _, row in df.iterrows():
+    ratio_text = []
+    for _, row in prepared.iterrows():
         parts = _split_dimensions(row["Dimensions"])
         labels.append(parts[-1] if parts else row["Dimensions"])
         parents.append(" / ".join(parts[:-1]) if len(parts) > 1 else "")
-        values.append(float(row[value_column]))
-        colors.append(float(row[metric_columns["ratio"]]))
+        values.append(_finite_float(row[value_column]) or 0.0)
+        ratio_value = _finite_float(row["_ratio_numeric"])
+        colors.append(ratio_value if ratio_value is not None else 1.0)
+        ratio_text.append(_format_number(row[metric_columns["ratio"]]))
 
     fig = go.Figure(
         go.Treemap(
             labels=labels,
             parents=parents,
             values=values,
+            customdata=ratio_text,
             marker={
                 "colors": colors,
                 "colorscale": "RdYlGn_r",
@@ -212,7 +265,7 @@ def _build_treemap_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.F
             hovertemplate=(
                 "<b>%{label}</b><br>"
                 f"{_ratio_label(metric)}: "
-                "%{color:.2f}<extra></extra>"
+                "%{customdata}<extra></extra>"
             ),
         )
     )

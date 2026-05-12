@@ -92,6 +92,8 @@ class SessionArtifactState:
         prepared_dataset_path = artifacts.get("prepared_dataset_path")
         if prepared_dataset_path:
             self.prepared_dataset_path = Path(prepared_dataset_path)
+            if result.get("kind") in {"profile", "feature_engineering"}:
+                changed = self._clear_downstream_artifacts() or changed
             changed = True
 
         sweep_summary_path = artifacts.get("sweep_summary_path")
@@ -112,6 +114,27 @@ class SessionArtifactState:
 
         if changed:
             self.refresh()
+        return changed
+
+    def _clear_downstream_artifacts(self) -> bool:
+        """Clear artifacts derived from the current prepared dataset."""
+
+        changed = any(
+            (
+                self.latest_sweep_path is not None,
+                bool(self.latest_sweep_paths_by_depth),
+                self.latest_visualization_path is not None,
+                self.latest_sweep_ready,
+                self.latest_visualization_ready,
+                self.latest_state_fingerprint is not None,
+            )
+        )
+        self.latest_sweep_path = None
+        self.latest_sweep_paths_by_depth = {}
+        self.latest_visualization_path = None
+        self.latest_sweep_ready = False
+        self.latest_visualization_ready = False
+        self.latest_state_fingerprint = None
         return changed
 
     def apply_audit_result(

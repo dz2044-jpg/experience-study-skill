@@ -53,8 +53,8 @@ class AICohortRow(BaseModel):
     Sum_MEC: float
     Sum_MAF: float
     Sum_MEF: float
-    AE_Ratio_Count: float
-    AE_Ratio_Amount: float
+    AE_Ratio_Count: float | None = None
+    AE_Ratio_Amount: float | None = None
     AE_Count_CI_Lower: float | None = None
     AE_Count_CI_Upper: float | None = None
     AE_Amount_CI_Lower: float | None = None

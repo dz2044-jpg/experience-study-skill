@@ -3,6 +3,7 @@ from skills.experience_study_skill.schemas import (
     FilterClauseInput,
     ProfileDatasetInput,
     RunDimensionalSweepInput,
+    get_tool_input_models,
 )
 
 
@@ -18,3 +19,11 @@ def test_high_risk_schema_descriptions_include_negative_constraints():
     assert "DO NOT invent file paths" in sweep_schema["properties"]["data_path"]["description"]
     assert "DO NOT invent column names" in filter_schema["properties"]["column"]["description"]
     assert "DO NOT invent column names" in band_schema["properties"]["source_column"]["description"]
+
+
+def test_tool_input_model_lookup_is_exposed_and_forbids_extra_fields():
+    models = get_tool_input_models()
+
+    assert models["profile_dataset"] is ProfileDatasetInput
+    assert models["run_dimensional_sweep"] is RunDimensionalSweepInput
+    assert ProfileDatasetInput.model_json_schema()["additionalProperties"] is False

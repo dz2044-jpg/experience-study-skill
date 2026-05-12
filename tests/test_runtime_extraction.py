@@ -111,6 +111,8 @@ def test_response_formatter_preserves_expected_text_shapes(tmp_path: Path):
         formatter.format_compact_result(schema_result)
         == "Inspected the schema for `analysis_inforce.parquet` (1 columns)."
     )
+    assert formatter.format_sweep_value(None) == "n/a"
+    assert formatter.format_sweep_value(float("inf")) == "n/a"
     assert (
         ResponseFormatter.sanitize_user_facing_text(
             "<thinking>Internal scratch.</thinking>\nFinal answer."

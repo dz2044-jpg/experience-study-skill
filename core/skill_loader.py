@@ -13,6 +13,7 @@ import yaml
 
 ToolSpecFactory = Callable[[set[str] | None], list[dict[str, Any]]]
 ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
+ToolInputModels = dict[str, type[Any]]
 
 
 @dataclass(slots=True)
@@ -24,6 +25,7 @@ class LoadedSkill:
     version: str
     instructions: str
     tool_spec_factory: ToolSpecFactory
+    tool_input_models: ToolInputModels
     tool_handlers: dict[str, ToolHandler]
     tool_context_type: type[Any]
 
@@ -68,6 +70,10 @@ def load_skill(skill_name: str) -> LoadedSkill:
 
     if not hasattr(schemas_module, "get_tool_specs"):
         raise AttributeError(f"{skill_package}.schemas must define get_tool_specs().")
+    if not hasattr(schemas_module, "get_tool_input_models"):
+        raise AttributeError(
+            f"{skill_package}.schemas must define get_tool_input_models()."
+        )
     if not hasattr(native_tools_module, "get_tool_handlers"):
         raise AttributeError(
             f"{skill_package}.native_tools must define get_tool_handlers()."
@@ -83,6 +89,7 @@ def load_skill(skill_name: str) -> LoadedSkill:
         version=str(metadata.get("version", "0.0.0")),
         instructions=instructions,
         tool_spec_factory=schemas_module.get_tool_specs,
+        tool_input_models=schemas_module.get_tool_input_models(),
         tool_handlers=native_tools_module.get_tool_handlers(),
         tool_context_type=native_tools_module.ToolExecutionContext,
     )

@@ -39,9 +39,18 @@ GOLDEN_SWEEP_COLUMNS = [
 
 
 class _FakeToolCall:
-    def __init__(self, *, tool_call_id: str, name: str, arguments: dict[str, object]) -> None:
+    def __init__(
+        self,
+        *,
+        tool_call_id: str,
+        name: str,
+        arguments: dict[str, object] | str,
+    ) -> None:
         self.id = tool_call_id
-        self.function = SimpleNamespace(name=name, arguments=json.dumps(arguments))
+        serialized_arguments = (
+            arguments if isinstance(arguments, str) else json.dumps(arguments)
+        )
+        self.function = SimpleNamespace(name=name, arguments=serialized_arguments)
 
     def model_dump(self) -> dict[str, object]:
         return {
@@ -573,3 +582,158 @@ def test_tool_call_keeps_internal_thinking_for_model_but_not_user_output(
         if message["role"] == "assistant"
     ]
     assert any("<thinking>" in message["content"] for message in assistant_messages)
+
+
+def _latest_tool_result(events) -> dict[str, object]:
+    tool_results = [event.data["result"] for event in events if event.type == "tool_result"]
+    assert tool_results
+    return tool_results[-1]
+
+
+def _assert_error_result_shape(result: dict[str, object]) -> None:
+    assert set(result) == {"ok", "kind", "message", "artifacts", "data"}
+    assert result["ok"] is False
+    assert result["artifacts"] == {}
+    assert isinstance(result["message"], str)
+    assert "Traceback" not in result["message"]
+
+
+def test_unknown_llm_tool_call_returns_safe_validation_error(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    copilot.client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    _FakeToolCall(
+                        tool_call_id="call_1",
+                        name="unknown_tool",
+                        arguments={},
+                    )
+                ],
+            )
+        ]
+    )
+
+    events = list(copilot.process_message(f"Show me the schema for {sample_csv_path}."))
+
+    result = _latest_tool_result(events)
+    _assert_error_result_shape(result)
+    assert result["kind"] == "validation_error"
+    assert result["data"] == {"error_type": "unknown_tool"}
+    assert final_message(events) == "Tool `unknown_tool` is not available."
+
+
+def test_malformed_llm_tool_arguments_return_safe_validation_error(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    copilot.client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    _FakeToolCall(
+                        tool_call_id="call_1",
+                        name="inspect_dataset_schema",
+                        arguments='{"data_path": ',
+                    )
+                ],
+            )
+        ]
+    )
+
+    events = list(copilot.process_message(f"Show me the schema for {sample_csv_path}."))
+
+    result = _latest_tool_result(events)
+    _assert_error_result_shape(result)
+    assert result["kind"] == "validation_error"
+    assert result["data"] == {"error_type": "malformed_json"}
+    assert "malformed JSON" in final_message(events)
+
+
+def test_runtime_validation_forbids_unknown_tool_fields(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    copilot.client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    _FakeToolCall(
+                        tool_call_id="call_1",
+                        name="inspect_dataset_schema",
+                        arguments={
+                            "data_path": str(sample_csv_path),
+                            "unexpected": "value",
+                        },
+                    )
+                ],
+            )
+        ]
+    )
+
+    events = list(copilot.process_message(f"Show me the schema for {sample_csv_path}."))
+
+    result = _latest_tool_result(events)
+    _assert_error_result_shape(result)
+    assert result["kind"] == "validation_error"
+    assert result["data"]["error_type"] == "schema_validation"
+    assert "unexpected" in final_message(events)
+
+
+def test_runtime_validation_catches_missing_required_tool_fields(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+    copilot.client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    _FakeToolCall(
+                        tool_call_id="call_1",
+                        name="profile_dataset",
+                        arguments={},
+                    )
+                ],
+            )
+        ]
+    )
+
+    events = list(copilot.process_message(f"Profile {sample_csv_path}."))
+
+    result = _latest_tool_result(events)
+    _assert_error_result_shape(result)
+    assert result["kind"] == "validation_error"
+    assert result["data"]["error_type"] == "schema_validation"
+    assert "data_path" in final_message(events)
+
+
+def test_handler_exception_returns_safe_runtime_error_without_crashing(
+    tmp_path: Path,
+    sample_csv_path: Path,
+):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+
+    def failing_handler(args, context):
+        raise RuntimeError("internal secret stack detail")
+
+    copilot.active_skill.tool_handlers["inspect_dataset_schema"] = failing_handler
+
+    events = list(copilot.process_message(f"Show me the schema for {sample_csv_path}."))
+
+    result = _latest_tool_result(events)
+    _assert_error_result_shape(result)
+    assert result["kind"] == "runtime_error"
+    assert result["data"]["error_type"] == "handler_exception"
+    assert result["data"]["exception_type"] == "RuntimeError"
+    assert "internal secret stack detail" not in final_message(events)
+    assert "failed during deterministic execution" in final_message(events)

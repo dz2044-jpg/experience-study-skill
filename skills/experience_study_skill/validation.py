@@ -52,6 +52,11 @@ def run_actuarial_data_checks(
     context.emit_status("Running deterministic actuarial validation checks.")
     issues = _find_raw_non_numeric_values(str(source_path), sheet_name=sheet_name)
     df = load_tabular_input(str(source_path), sheet_name=sheet_name)
+    missing_core_columns = [column for column in ACTUARIAL_NUMERICS if column not in df.columns]
+    issues.extend(
+        f"Missing required actuarial column: {column}."
+        for column in missing_core_columns
+    )
 
     if "Policy_Number" in df.columns and not pd.api.types.is_string_dtype(df["Policy_Number"]):
         issues.append("Policy_Number must be a string type.")
