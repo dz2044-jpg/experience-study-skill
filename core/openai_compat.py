@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import logging
 import os
-import sys
 from typing import Any
 
 try:
@@ -13,6 +13,9 @@ except ImportError:  # pragma: no cover - depends on environment
 
 if load_dotenv is not None:
     load_dotenv()
+
+
+LOGGER = logging.getLogger(__name__)
 
 try:
     from openai import OpenAI
@@ -39,9 +42,10 @@ def openai_error_type(exc: Exception) -> str:
 
 
 def log_openai_error(component: str, action: str, exc: Exception) -> None:
-    """Emit a consistent stderr diagnostic for OpenAI request failures."""
-    print(
-        f"[{component} Debug] {action} failed: {summarize_openai_error(exc)}",
-        file=sys.stderr,
+    """Emit a consistent diagnostic for OpenAI request failures."""
+    LOGGER.warning(
+        "[%s Debug] %s failed: %s",
+        component,
+        action,
+        summarize_openai_error(exc),
     )
-

@@ -6,7 +6,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from core.artifact_manifest import read_artifact_manifest
+from core.artifact_readiness import (
+    PathState,
+    coerce_path,
+    entry_source_matches,
+    manifest_entry_for_path,
+    path_exists,
+    path_state,
+    safe_read_artifact_manifest,
+)
 from core.methodology_log import read_methodology_log
 
 
@@ -47,39 +55,6 @@ class AIWorkflowSnapshot:
     basis: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _PathState:
-    path: Path | None
-    exists: bool
-
-    @property
-    def is_recorded(self) -> bool:
-        return self.path is not None
-
-
-def _coerce_path(value: Any) -> Path | None:
-    if value is None:
-        return None
-    try:
-        return Path(value)
-    except TypeError:
-        return None
-
-
-def _path_exists(path: Path | None) -> bool:
-    if path is None:
-        return False
-    try:
-        return path.exists()
-    except OSError:
-        return False
-
-
-def _path_state(value: Any) -> _PathState:
-    path = _coerce_path(value)
-    return _PathState(path=path, exists=_path_exists(path))
-
-
 def _path_detail(prefix: str, path: Path | None) -> str:
     if path is None:
         return prefix
@@ -88,16 +63,16 @@ def _path_detail(prefix: str, path: Path | None) -> str:
 
 def _default_path(state: Any, attribute_name: str) -> Path | None:
     try:
-        return _coerce_path(getattr(state, attribute_name))
+        return coerce_path(getattr(state, attribute_name))
     except (AttributeError, OSError, TypeError):
         return None
 
 
 def _safe_methodology_events(state: Any) -> list[dict[str, Any]]:
-    path = _coerce_path(getattr(state, "methodology_log_path", None))
+    path = coerce_path(getattr(state, "methodology_log_path", None))
     if path is None:
         path = _default_path(state, "default_methodology_log_path")
-    if path is None or not _path_exists(path):
+    if path is None or not path_exists(path):
         return []
     try:
         payload = read_methodology_log(path)
@@ -110,18 +85,10 @@ def _safe_methodology_events(state: Any) -> list[dict[str, Any]]:
 
 
 def _safe_artifact_manifest(state: Any) -> dict[str, Any]:
-    path = _coerce_path(getattr(state, "artifact_manifest_path", None))
+    path = coerce_path(getattr(state, "artifact_manifest_path", None))
     if path is None:
         path = _default_path(state, "default_artifact_manifest_path")
-    if path is None or not _path_exists(path):
-        return {"entries": []}
-    try:
-        payload = read_artifact_manifest(path)
-    except (OSError, TypeError, ValueError):
-        return {"entries": []}
-    if not isinstance(payload.get("entries"), list):
-        return {"entries": []}
-    return payload
+    return safe_read_artifact_manifest(path)
 
 
 def _latest_event_index(events: list[dict[str, Any]], tool_names: set[str]) -> int | None:
@@ -136,63 +103,12 @@ def _latest_index(*indexes: int | None) -> int | None:
     return max(present_indexes) if present_indexes else None
 
 
-def _paths_match(candidate: Any, target: Path | None) -> bool:
-    candidate_path = _coerce_path(candidate)
-    if candidate_path is None or target is None:
-        return False
-    if candidate_path == target or str(candidate_path) == str(target):
-        return True
-    try:
-        return candidate_path.exists() and target.exists() and (
-            candidate_path.resolve() == target.resolve()
-        )
-    except OSError:
-        return False
-
-
-def _manifest_entry_for_path(
-    manifest: dict[str, Any],
-    *,
-    artifact_type: str,
-    path: Path | None,
-) -> dict[str, Any] | None:
-    if path is None:
-        return None
-    for entry in manifest.get("entries", []):
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("artifact_type") == artifact_type and _paths_match(entry.get("path"), path):
-            return entry
-    return None
-
-
-def _entry_source_matches(
-    entry: dict[str, Any] | None,
-    source_path: Path | None,
-    source_entry: dict[str, Any] | None = None,
-) -> bool | None:
-    if entry is None or source_path is None:
-        return None
-    sources = entry.get("source_artifacts", [])
-    if not isinstance(sources, list) or not sources:
-        return None
-    for source in sources:
-        if not isinstance(source, dict) or not _paths_match(source.get("path"), source_path):
-            continue
-        source_hash = source.get("content_hash")
-        current_hash = source_entry.get("content_hash") if source_entry else None
-        if source_hash and current_hash:
-            return source_hash == current_hash
-        return True
-    return False
-
-
 def _schema_or_validation_step(
     *,
     step_id: str,
     label: str,
     tool_name: str,
-    active_dataset: _PathState,
+    active_dataset: PathState,
     events: list[dict[str, Any]],
     latest_dataset_mutation_index: int | None,
 ) -> WorkflowStep:
@@ -239,7 +155,7 @@ def _schema_or_validation_step(
     )
 
 
-def _dataset_step(raw: _PathState, prepared: _PathState) -> WorkflowStep:
+def _dataset_step(raw: PathState, prepared: PathState) -> WorkflowStep:
     if prepared.exists:
         return WorkflowStep(
             id="dataset",
@@ -281,8 +197,8 @@ def _dataset_step(raw: _PathState, prepared: _PathState) -> WorkflowStep:
 
 def _feature_step(
     *,
-    active_dataset: _PathState,
-    prepared: _PathState,
+    active_dataset: PathState,
+    prepared: PathState,
     events: list[dict[str, Any]],
     latest_profile_index: int | None,
 ) -> WorkflowStep:
@@ -341,8 +257,8 @@ def _feature_step(
 
 def _sweep_step(
     *,
-    prepared: _PathState,
-    sweep: _PathState,
+    prepared: PathState,
+    sweep: PathState,
     events: list[dict[str, Any]],
     manifest: dict[str, Any],
     latest_dataset_mutation_index: int | None,
@@ -389,17 +305,17 @@ def _sweep_step(
             basis="latest sweep artifact",
         )
 
-    sweep_entry = _manifest_entry_for_path(
+    sweep_entry = manifest_entry_for_path(
         manifest,
         artifact_type="sweep_summary",
         path=sweep.path,
     )
-    prepared_entry = _manifest_entry_for_path(
+    prepared_entry = manifest_entry_for_path(
         manifest,
         artifact_type="prepared_dataset",
         path=prepared.path,
     )
-    source_matches = _entry_source_matches(sweep_entry, prepared.path, prepared_entry)
+    source_matches = entry_source_matches(sweep_entry, prepared.path, prepared_entry)
     if source_matches is False:
         return WorkflowStep(
             id="sweep",
@@ -439,8 +355,8 @@ def _sweep_step(
 
 def _visualization_step(
     *,
-    sweep: _PathState,
-    visualization: _PathState,
+    sweep: PathState,
+    visualization: PathState,
     events: list[dict[str, Any]],
     manifest: dict[str, Any],
 ) -> WorkflowStep:
@@ -475,17 +391,17 @@ def _visualization_step(
             basis="latest sweep artifact",
         )
 
-    visualization_entry = _manifest_entry_for_path(
+    visualization_entry = manifest_entry_for_path(
         manifest,
         artifact_type="visualization_report",
         path=visualization.path,
     )
-    sweep_entry = _manifest_entry_for_path(
+    sweep_entry = manifest_entry_for_path(
         manifest,
         artifact_type="sweep_summary",
         path=sweep.path,
     )
-    source_matches = _entry_source_matches(visualization_entry, sweep.path, sweep_entry)
+    source_matches = entry_source_matches(visualization_entry, sweep.path, sweep_entry)
     if source_matches is False:
         return WorkflowStep(
             id="visualization",
@@ -600,10 +516,10 @@ def derive_workflow_steps(
     If feature engineering creates or updates the prepared dataset afterward,
     those review steps become stale until rerun for the active prepared artifact.
     """
-    raw = _path_state(getattr(state, "raw_input_path", None))
-    prepared = _path_state(getattr(state, "prepared_dataset_path", None))
-    sweep = _path_state(getattr(state, "latest_sweep_path", None))
-    visualization = _path_state(getattr(state, "latest_visualization_path", None))
+    raw = path_state(getattr(state, "raw_input_path", None))
+    prepared = path_state(getattr(state, "prepared_dataset_path", None))
+    sweep = path_state(getattr(state, "latest_sweep_path", None))
+    visualization = path_state(getattr(state, "latest_visualization_path", None))
 
     events = _safe_methodology_events(state)
     manifest = _safe_artifact_manifest(state)

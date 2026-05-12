@@ -853,7 +853,7 @@ class UnifiedCopilot:
     def _llm_messages(self, user_input: str) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.active_skill.instructions},
-            {"role": "system", "content": self.state.to_prompt()},
+            {"role": "system", "content": self.state.to_llm_prompt()},
         ]
         messages.extend(self.history)
         messages.append({"role": "user", "content": user_input})

@@ -71,6 +71,10 @@ class ResponseFormatter:
             return "n/a"
         return f"{numeric_value:.2f}"
 
+    @staticmethod
+    def _escape_markdown_table_cell(value: Any) -> str:
+        return str(value).replace("\n", "<br>").replace("|", r"\|")
+
     def analysis_summary_table(self, rows: list[dict[str, Any]]) -> str:
         headers = [
             "Cohort Dimension",
@@ -79,8 +83,9 @@ class ResponseFormatter:
             "A/E Ratio (Count)",
             "A/E Ratio (Amount)",
         ]
+        escaped_headers = [self._escape_markdown_table_cell(header) for header in headers]
         lines = [
-            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join(escaped_headers) + " |",
             "| --- | ---: | ---: | ---: | ---: |",
         ]
         for row in rows:
@@ -91,7 +96,8 @@ class ResponseFormatter:
                 self.format_sweep_value(row.get("AE_Ratio_Count")),
                 self.format_sweep_value(row.get("AE_Ratio_Amount")),
             ]
-            lines.append("| " + " | ".join(values) + " |")
+            escaped_values = [self._escape_markdown_table_cell(value) for value in values]
+            lines.append("| " + " | ".join(escaped_values) + " |")
         return "\n".join(lines)
 
     def analysis_summary_sections(

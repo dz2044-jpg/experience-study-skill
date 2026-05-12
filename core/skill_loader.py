@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
-from pathlib import Path
+from importlib.resources import files
 import re
 from typing import Any, Callable
 
@@ -56,15 +56,15 @@ def load_skill(skill_name: str) -> LoadedSkill:
     """Load a skill's markdown metadata, schemas, and native tools."""
     public_name, package_name = _normalize_skill_identifiers(skill_name)
     skill_package = f"skills.{package_name}"
-    skill_path = Path("skills") / package_name / "skill.md"
-    if not skill_path.exists():
+    skill_resource = files(skill_package).joinpath("skill.md")
+    try:
+        skill_markdown = skill_resource.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"Skill markdown not found for '{skill_name}': {skill_path}"
-        )
+            f"Skill markdown not found for '{skill_name}': {skill_package}/skill.md"
+        ) from exc
 
-    metadata, instructions = _parse_skill_markdown(
-        skill_path.read_text(encoding="utf-8")
-    )
+    metadata, instructions = _parse_skill_markdown(skill_markdown)
     schemas_module = importlib.import_module(f"{skill_package}.schemas")
     native_tools_module = importlib.import_module(f"{skill_package}.native_tools")
 

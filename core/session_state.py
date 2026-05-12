@@ -184,6 +184,54 @@ class SessionArtifactState:
         ]
         return "\n".join(lines)
 
+    @staticmethod
+    def _artifact_ref(path: Path | None) -> str:
+        return path.name if path else "None"
+
+    def to_llm_prompt(self) -> str:
+        """Return session state for LLM tool planning without local absolute paths.
+
+        The deterministic tool runtime already receives current session paths in
+        its server-side context. This prompt keeps readiness and artifact refs
+        available while avoiding unnecessary disclosure of source/session paths.
+        """
+
+        self.refresh()
+        available_depths = sorted(self.latest_sweep_paths_by_depth)
+        sweep_refs_by_depth = {
+            depth: path.name for depth, path in sorted(self.latest_sweep_paths_by_depth.items())
+        }
+        try:
+            raw_input_available = bool(self.raw_input_path and self.raw_input_path.exists())
+        except OSError:
+            raw_input_available = False
+        lines = [
+            "Current Session State:",
+            f"- session_id: {self.session_id}",
+            f"- raw_input_available: {raw_input_available}",
+            "- raw_input_ref: current source dataset (path omitted)"
+            if raw_input_available
+            else "- raw_input_ref: None",
+            f"- prepared_dataset_ready: {self.prepared_dataset_ready}",
+            f"- prepared_dataset_ref: {self._artifact_ref(self.prepared_dataset_path)}",
+            f"- latest_sweep_ready: {self.latest_sweep_ready}",
+            f"- latest_sweep_ref: {self._artifact_ref(self.latest_sweep_path)}",
+            f"- latest_sweep_refs_by_depth: {sweep_refs_by_depth}",
+            f"- available_sweep_depths: {available_depths}",
+            f"- latest_visualization_ready: {self.latest_visualization_ready}",
+            f"- latest_visualization_ref: {self._artifact_ref(self.latest_visualization_path)}",
+            f"- audit_ready: {self.audit_ready}",
+            f"- methodology_log_ref: {self._artifact_ref(self.methodology_log_path)}",
+            f"- artifact_manifest_ref: {self._artifact_ref(self.artifact_manifest_path)}",
+            f"- latest_state_fingerprint: {self.latest_state_fingerprint or 'None'}",
+            (
+                "- tool_path_guidance: Use current session state by omitting optional "
+                "data_path arguments when a prepared dataset or latest sweep is ready; "
+                "only pass data_path when the user explicitly provides one."
+            ),
+        ]
+        return "\n".join(lines)
+
     def to_event_payload(self) -> dict[str, Any]:
         self.refresh()
         return {

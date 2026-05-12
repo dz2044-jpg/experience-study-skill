@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
 import math
 from pathlib import Path
 from typing import Any, Iterable
 import webbrowser
 
-from core.artifact_manifest import file_sha256, read_artifact_manifest
+from core.artifact_readiness import (
+    AIArtifactReadiness,
+    compare_ai_response_freshness,
+    get_ai_artifact_readiness,
+    manifest_content_hash_for_path,
+    paths_match,
+)
 from core.copilot_agent import CopilotEvent, UnifiedCopilot
 from core.workflow_status import (
     AIWorkflowSnapshot,
@@ -29,6 +35,8 @@ try:
 except ImportError:  # pragma: no cover - depends on environment
     st = None  # type: ignore[assignment]
 
+
+LOGGER = logging.getLogger(__name__)
 
 EMPTY_STATE_SUGGESTIONS = (
     (
@@ -91,24 +99,9 @@ _WORKFLOW_STATUS_LABELS = {
 }
 
 
-@dataclass(slots=True)
-class _AIArtifactReadiness:
-    checks: dict[str, bool]
-    sweep_path: Path | None = None
-    artifact_manifest_path: Path | None = None
-    state_fingerprint: str | None = None
-    sweep_content_hash: str | None = None
-    actual_sweep_content_hash: str | None = None
-
-    @property
-    def ready(self) -> bool:
-        return all(self.checks.values())
-
-    @property
-    def sweep_hash_matches_file(self) -> bool | None:
-        if not self.sweep_content_hash or not self.actual_sweep_content_hash:
-            return None
-        return self.sweep_content_hash == self.actual_sweep_content_hash
+_AIArtifactReadiness = AIArtifactReadiness
+_paths_match = paths_match
+_manifest_content_hash_for_path = manifest_content_hash_for_path
 
 
 def _require_streamlit() -> None:
@@ -190,86 +183,16 @@ def _render_sweep_explorer(sweep_results: list[dict[str, Any]] | None) -> None:
         st.dataframe(display_df, hide_index=True, use_container_width=True)
 
 
-def _paths_match(candidate: str | Path | None, target: str | Path | None) -> bool:
-    if candidate is None or target is None:
-        return False
-    candidate_path = Path(candidate)
-    target_path = Path(target)
-    if candidate_path == target_path or str(candidate_path) == str(target_path):
-        return True
-    try:
-        return candidate_path.exists() and target_path.exists() and (
-            candidate_path.resolve() == target_path.resolve()
-        )
-    except OSError:
-        return False
-
-
-def _manifest_content_hash_for_path(
-    manifest_path: str | Path | None,
-    artifact_path: str | Path | None,
-) -> str | None:
-    if manifest_path is None or artifact_path is None:
-        return None
-    try:
-        manifest = read_artifact_manifest(manifest_path)
-    except (OSError, ValueError):
-        return None
-
-    for entry in manifest.get("entries", []):
-        if not isinstance(entry, dict):
-            continue
-        content_hash = entry.get("content_hash")
-        if content_hash and _paths_match(entry.get("path"), artifact_path):
-            return str(content_hash)
-    return None
-
-
 def _get_ai_panel_readiness(
     state: Any,
     *,
     include_file_hash: bool = True,
     refresh_state: bool = True,
 ) -> _AIArtifactReadiness:
-    if refresh_state and hasattr(state, "refresh"):
-        state.refresh()
-
-    sweep_path = getattr(state, "latest_sweep_path", None)
-    manifest_path = getattr(state, "artifact_manifest_path", None)
-    state_fingerprint = getattr(state, "latest_state_fingerprint", None)
-
-    sweep_artifact_path = Path(sweep_path) if sweep_path else None
-    artifact_manifest_path = Path(manifest_path) if manifest_path else None
-    latest_sweep_ready = bool(sweep_artifact_path and sweep_artifact_path.exists())
-    artifact_manifest_ready = bool(
-        artifact_manifest_path and artifact_manifest_path.exists()
-    )
-    actual_sweep_content_hash = None
-    if include_file_hash and latest_sweep_ready and sweep_artifact_path:
-        try:
-            actual_sweep_content_hash = file_sha256(sweep_artifact_path)
-        except OSError:
-            actual_sweep_content_hash = None
-
-    sweep_content_hash = None
-    if latest_sweep_ready and artifact_manifest_ready:
-        sweep_content_hash = _manifest_content_hash_for_path(
-            artifact_manifest_path,
-            sweep_artifact_path,
-        )
-
-    return _AIArtifactReadiness(
-        checks={
-            "latest_sweep": latest_sweep_ready,
-            "artifact_manifest": artifact_manifest_ready,
-            "state_fingerprint": bool(state_fingerprint),
-            "sweep_manifest_hash": bool(sweep_content_hash),
-        },
-        sweep_path=sweep_artifact_path,
-        artifact_manifest_path=artifact_manifest_path,
-        state_fingerprint=str(state_fingerprint) if state_fingerprint else None,
-        sweep_content_hash=sweep_content_hash,
-        actual_sweep_content_hash=actual_sweep_content_hash,
+    return get_ai_artifact_readiness(
+        state,
+        include_file_hash=include_file_hash,
+        refresh_state=refresh_state,
     )
 
 
@@ -423,28 +346,15 @@ def _ai_response_freshness(
     packet: AISweepPacket,
     readiness: _AIArtifactReadiness,
 ) -> dict[str, Any]:
-    comparisons = {
-        "state fingerprint": (
-            response_record.get("response_state_fingerprint"),
-            readiness.state_fingerprint,
-        ),
-        "packet fingerprint": (
-            response_record.get("response_packet_fingerprint"),
-            packet.packet_fingerprint,
-        ),
-        "sweep content hash": (
-            response_record.get("response_sweep_content_hash"),
-            readiness.sweep_content_hash,
-        ),
-    }
-    mismatches = [
-        label
-        for label, (stored_value, current_value) in comparisons.items()
-        if not stored_value or not current_value or stored_value != current_value
-    ]
+    freshness = compare_ai_response_freshness(
+        response_record,
+        readiness=readiness,
+        packet_fingerprint=packet.packet_fingerprint,
+    )
     return {
-        "is_fresh": not mismatches,
-        "mismatches": mismatches,
+        "is_fresh": freshness.is_fresh,
+        "mismatches": list(freshness.mismatches),
+        "reason": freshness.reason,
     }
 
 
@@ -651,22 +561,13 @@ def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
 def _ai_workflow_freshness_mismatches(
     response_record: dict[str, Any],
     readiness: _AIArtifactReadiness,
+    packet_fingerprint: str | None = None,
 ) -> tuple[str, ...]:
-    comparisons = {
-        "state fingerprint": (
-            response_record.get("response_state_fingerprint"),
-            readiness.state_fingerprint,
-        ),
-        "sweep content hash": (
-            response_record.get("response_sweep_content_hash"),
-            readiness.sweep_content_hash,
-        ),
-    }
-    return tuple(
-        label
-        for label, (stored_value, current_value) in comparisons.items()
-        if not stored_value or not current_value or stored_value != current_value
-    )
+    return compare_ai_response_freshness(
+        response_record,
+        readiness=readiness,
+        packet_fingerprint=packet_fingerprint,
+    ).mismatches
 
 
 def _build_ai_workflow_snapshot(copilot: UnifiedCopilot) -> AIWorkflowSnapshot:
@@ -688,19 +589,38 @@ def _build_ai_workflow_snapshot(copilot: UnifiedCopilot) -> AIWorkflowSnapshot:
     has_response = isinstance(stored_response_record, dict)
     freshness_mismatches: tuple[str, ...] = ()
     response_is_fresh: bool | None = None
+    packet_build_error: Exception | None = None
     if has_response:
-        freshness_mismatches = _ai_workflow_freshness_mismatches(
-            stored_response_record,
-            readiness,
-        )
-        response_is_fresh = readiness.ready and not freshness_mismatches
+        if readiness.ready:
+            try:
+                packet = _build_ai_packet_for_panel(readiness)
+            except (OSError, ValueError) as exc:
+                LOGGER.warning(
+                    "AI workflow packet construction failed during sidebar freshness check: %s",
+                    exc,
+                )
+                packet_build_error = exc
+                response_is_fresh = False
+            else:
+                freshness = compare_ai_response_freshness(
+                    stored_response_record,
+                    readiness=readiness,
+                    packet_fingerprint=packet.packet_fingerprint,
+                )
+                freshness_mismatches = freshness.mismatches
+                response_is_fresh = freshness.is_fresh
+        else:
+            response_is_fresh = False
 
     if readiness.ready:
-        detail = (
-            "Stored AI response matches current sweep fingerprints."
-            if has_response and response_is_fresh
-            else "Existing AI panel readiness checks pass."
-        )
+        if packet_build_error is not None:
+            detail = "Stored AI response freshness could not be checked against the current sweep packet."
+        elif has_response and response_is_fresh:
+            detail = "Stored AI response matches current sweep fingerprints."
+        elif has_response and response_is_fresh is False:
+            detail = None
+        else:
+            detail = "Existing AI panel readiness checks pass."
     else:
         missing = [
             _AI_READINESS_LABELS.get(check_name, check_name)

@@ -71,6 +71,56 @@ def test_prompt_state_contract_exposes_readiness_flags_and_artifact_paths(
     assert "- latest_visualization_ready: False" in prompt_state
 
 
+def test_llm_prompt_omits_absolute_paths_but_keeps_artifact_refs(tmp_path: Path):
+    state = SessionArtifactState(session_id="session-a", output_base_dir=tmp_path)
+    raw_path = tmp_path / "private" / "synthetic_inforce.csv"
+    prepared_path = state.output_dir / "analysis_inforce.parquet"
+    sweep_path = state.output_dir / "sweep_summary.csv"
+    visualization_path = state.output_dir / "combined_ae_report.html"
+    for path in (raw_path, prepared_path, sweep_path, visualization_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("artifact", encoding="utf-8")
+    state.raw_input_path = raw_path
+    state.prepared_dataset_path = prepared_path
+    state.latest_sweep_path = sweep_path
+    state.latest_sweep_paths_by_depth = {1: state.output_dir / "sweep_summary_latest_1.csv"}
+    state.latest_visualization_path = visualization_path
+    state.methodology_log_path = state.default_methodology_log_path
+    state.artifact_manifest_path = state.default_artifact_manifest_path
+    state.latest_state_fingerprint = "state-a"
+
+    prompt_state = state.to_llm_prompt()
+
+    assert str(tmp_path) not in prompt_state
+    assert "synthetic_inforce.csv" not in prompt_state
+    assert "- raw_input_ref: current source dataset (path omitted)" in prompt_state
+    assert "- prepared_dataset_ref: analysis_inforce.parquet" in prompt_state
+    assert "- latest_sweep_ref: sweep_summary.csv" in prompt_state
+    assert "- latest_visualization_ref: combined_ae_report.html" in prompt_state
+    assert "- latest_state_fingerprint: state-a" in prompt_state
+    assert "omit" in prompt_state
+
+
+def test_llm_messages_use_safe_session_prompt(tmp_path: Path):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path)
+    raw_path = tmp_path / "sensitive" / "synthetic_inforce.csv"
+    prepared_path = copilot.state.output_dir / "analysis_inforce.parquet"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    prepared_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_text("raw", encoding="utf-8")
+    prepared_path.write_text("prepared", encoding="utf-8")
+    copilot.state.raw_input_path = raw_path
+    copilot.state.prepared_dataset_path = prepared_path
+
+    messages = copilot._llm_messages("Inspect the schema.")
+    prompt_state = messages[1]["content"]
+
+    assert str(tmp_path) not in prompt_state
+    assert str(raw_path) not in prompt_state
+    assert "synthetic_inforce.csv" not in prompt_state
+    assert "analysis_inforce.parquet" in prompt_state
+
+
 @pytest.mark.parametrize("result_kind", ["profile", "feature_engineering"])
 def test_prepared_dataset_writes_invalidate_downstream_artifacts_but_preserve_audit_paths(
     tmp_path: Path,

@@ -9,6 +9,7 @@ from core.copilot_agent import (
     UnifiedCopilot,
 )
 from core.fallback_planner import FallbackPlanner
+from core.openai_compat import log_openai_error
 from core.prerequisite_guard import guard_missing_prerequisites
 from core.response_formatter import ResponseFormatter
 import core.fallback_planner as fallback_planner
@@ -119,6 +120,32 @@ def test_response_formatter_preserves_expected_text_shapes(tmp_path: Path):
         )
         == "Final answer."
     )
+
+
+def test_response_formatter_escapes_markdown_table_pipes(tmp_path: Path):
+    state = SessionArtifactState(session_id="session-a", output_base_dir=tmp_path)
+    formatter = ResponseFormatter(state)
+
+    table = formatter.analysis_summary_table(
+        [
+            {
+                "Dimensions": "Gender=Male | Smoker=Yes",
+                "Sum_MAC": 2,
+                "Sum_MEC": 1.25,
+                "AE_Ratio_Count": 1.6,
+                "AE_Ratio_Amount": 1.75,
+            }
+        ]
+    )
+
+    assert "Gender=Male \\| Smoker=Yes" in table
+    assert "| Gender=Male \\| Smoker=Yes | 2.00 | 1.25 | 1.60 | 1.75 |" in table
+
+
+def test_openai_error_diagnostics_use_logging(caplog):
+    log_openai_error("UnitTest", "Request", RuntimeError("network unavailable"))
+
+    assert "[UnitTest Debug] Request failed: RuntimeError: network unavailable" in caplog.text
 
 
 def test_fallback_planner_preserves_top_n_cap_and_full_plan_order(tmp_path: Path):

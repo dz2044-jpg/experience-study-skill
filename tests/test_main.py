@@ -220,6 +220,7 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_on_known_mismatch(
             session_state={
                 "ai_interpretation_response": {
                     "response_state_fingerprint": "state-a",
+                    "response_packet_fingerprint": "packet-a",
                     "response_sweep_content_hash": "hash-a",
                 }
             }
@@ -239,6 +240,14 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_on_known_mismatch(
             sweep_content_hash="hash-b",
         ),
     )
+    monkeypatch.setattr(
+        main,
+        "_build_ai_packet_for_panel",
+        lambda readiness: _example_packet(
+            state_fingerprint="state-b",
+            packet_fingerprint="packet-b",
+        ),
+    )
 
     snapshot = main._build_ai_workflow_snapshot(SimpleNamespace(state=object()))
 
@@ -247,6 +256,7 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_on_known_mismatch(
     assert snapshot.response_is_fresh is False
     assert snapshot.freshness_mismatches == (
         "state fingerprint",
+        "packet fingerprint",
         "sweep content hash",
     )
 
@@ -261,6 +271,7 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_when_sweep_state_is_cl
             session_state={
                 "ai_interpretation_response": {
                     "response_state_fingerprint": "state-a",
+                    "response_packet_fingerprint": "packet-a",
                     "response_sweep_content_hash": "hash-a",
                 }
             }
@@ -286,10 +297,7 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_when_sweep_state_is_cl
     assert snapshot.ready is False
     assert snapshot.has_response is True
     assert snapshot.response_is_fresh is False
-    assert snapshot.freshness_mismatches == (
-        "state fingerprint",
-        "sweep content hash",
-    )
+    assert snapshot.freshness_mismatches == ()
 
 
 def _example_packet(
@@ -332,6 +340,99 @@ def _example_packet(
             ),
         ],
     )
+
+
+def test_ai_workflow_snapshot_compares_packet_fingerprint_when_response_exists(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "st",
+        SimpleNamespace(
+            session_state={
+                "ai_interpretation_response": {
+                    "response_state_fingerprint": "state-a",
+                    "response_packet_fingerprint": "packet-a",
+                    "response_sweep_content_hash": "hash-a",
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_ai_panel_readiness",
+        lambda state, include_file_hash=True, refresh_state=True: main._AIArtifactReadiness(
+            checks={
+                "latest_sweep": True,
+                "artifact_manifest": True,
+                "state_fingerprint": True,
+                "sweep_manifest_hash": True,
+            },
+            state_fingerprint="state-a",
+            sweep_content_hash="hash-a",
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_build_ai_packet_for_panel",
+        lambda readiness: _example_packet(packet_fingerprint="packet-b"),
+    )
+
+    snapshot = main._build_ai_workflow_snapshot(SimpleNamespace(state=object()))
+
+    assert snapshot.ready is True
+    assert snapshot.has_response is True
+    assert snapshot.response_is_fresh is False
+    assert snapshot.freshness_mismatches == ("packet fingerprint",)
+
+
+def test_ai_workflow_snapshot_handles_packet_build_failure(
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "st",
+        SimpleNamespace(
+            session_state={
+                "ai_interpretation_response": {
+                    "response_state_fingerprint": "state-a",
+                    "response_packet_fingerprint": "packet-a",
+                    "response_sweep_content_hash": "hash-a",
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_ai_panel_readiness",
+        lambda state, include_file_hash=True, refresh_state=True: main._AIArtifactReadiness(
+            checks={
+                "latest_sweep": True,
+                "artifact_manifest": True,
+                "state_fingerprint": True,
+                "sweep_manifest_hash": True,
+            },
+            state_fingerprint="state-a",
+            sweep_content_hash="hash-a",
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_build_ai_packet_for_panel",
+        lambda readiness: (_ for _ in ()).throw(ValueError("bad packet")),
+    )
+
+    snapshot = main._build_ai_workflow_snapshot(SimpleNamespace(state=object()))
+
+    assert snapshot.ready is True
+    assert snapshot.has_response is True
+    assert snapshot.response_is_fresh is False
+    assert snapshot.freshness_mismatches == ()
+    assert snapshot.detail == (
+        "Stored AI response freshness could not be checked against the current sweep packet."
+    )
+    assert "AI workflow packet construction failed" in caplog.text
 
 
 def test_render_app_renders_ai_panel_after_current_chat_processing(monkeypatch) -> None:
