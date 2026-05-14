@@ -15,7 +15,10 @@ from skills.experience_study_skill.native_tools import (
     run_actuarial_data_checks,
     run_dimensional_sweep,
 )
-from skills.experience_study_skill.visualization import _build_table_figure
+from skills.experience_study_skill.visualization import (
+    _build_table_figure,
+    _build_treemap_figure,
+)
 
 
 EXPECTED_PUBLIC_FUNCTIONS = {
@@ -497,3 +500,77 @@ def test_visualization_table_formats_invalid_ratios_as_na():
     cell_values = fig.data[0].cells.values
     assert cell_values[4][0] == "n/a"
     assert cell_values[5][0] == "n/a"
+
+
+def test_treemap_figure_keeps_one_way_sweep_as_root_level_nodes():
+    fig = _build_treemap_figure(
+        pd.DataFrame(
+            [
+                {
+                    "Dimensions": "Gender=M",
+                    "Sum_MOC": 1.8,
+                    "Sum_MAC": 2,
+                    "Sum_MEC": 0.79,
+                    "AE_Ratio_Count": 2.53,
+                },
+                {
+                    "Dimensions": "Gender=F",
+                    "Sum_MOC": 2.6,
+                    "Sum_MAC": 1,
+                    "Sum_MEC": 0.63,
+                    "AE_Ratio_Count": 1.59,
+                },
+            ]
+        ),
+        "count",
+        "sweep_summary.csv",
+    )
+
+    trace = fig.data[0]
+
+    assert list(trace.ids) == ["Gender=M", "Gender=F"]
+    assert list(trace.labels) == ["Gender=M", "Gender=F"]
+    assert list(trace.parents) == ["", ""]
+
+
+def test_treemap_figure_creates_parent_nodes_for_two_way_sweep():
+    fig = _build_treemap_figure(
+        pd.DataFrame(
+            [
+                {
+                    "Dimensions": "Gender=M | Risk_Class=Standard",
+                    "Sum_MAF": 120000.0,
+                    "Sum_MEF": 100000.0,
+                    "AE_Ratio_Amount": 1.2,
+                },
+                {
+                    "Dimensions": "Gender=M | Risk_Class=Preferred",
+                    "Sum_MAF": 90000.0,
+                    "Sum_MEF": 100000.0,
+                    "AE_Ratio_Amount": 0.9,
+                },
+                {
+                    "Dimensions": "Gender=F | Risk_Class=Standard",
+                    "Sum_MAF": 80000.0,
+                    "Sum_MEF": 100000.0,
+                    "AE_Ratio_Amount": 0.8,
+                },
+            ]
+        ),
+        "amount",
+        "sweep_summary.csv",
+    )
+
+    trace = fig.data[0]
+    ids = list(trace.ids)
+    parents = list(trace.parents)
+    labels = list(trace.labels)
+
+    assert set(parents) - {""} <= set(ids)
+    assert "Gender=M" in ids
+    assert "Gender=M | Risk_Class=Standard" in ids
+    assert "Gender=F | Risk_Class=Standard" in ids
+    assert parents[ids.index("Gender=M | Risk_Class=Standard")] == "Gender=M"
+    assert parents[ids.index("Gender=F | Risk_Class=Standard")] == "Gender=F"
+    assert labels.count("Risk_Class=Standard") == 2
+    assert dict(zip(ids, trace.values))["Gender=M"] == 210000.0

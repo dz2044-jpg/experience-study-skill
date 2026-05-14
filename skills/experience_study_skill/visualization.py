@@ -227,33 +227,92 @@ def _split_dimensions(label: str) -> list[str]:
     return [part.strip() for part in str(label).split("|") if part.strip()]
 
 
+def _treemap_ratio(node: dict[str, Any], *, has_ratio_totals: bool) -> float | None:
+    """Return the aggregate A/E ratio used to color a treemap node."""
+
+    if has_ratio_totals:
+        expected = _finite_float(node["expected"])
+        if expected is not None and expected > 0:
+            actual = _finite_float(node["actual"]) or 0.0
+            return actual / expected
+
+    weighted_ratio_weight = _finite_float(node["weighted_ratio_weight"]) or 0.0
+    if weighted_ratio_weight > 0:
+        return float(node["weighted_ratio_total"]) / weighted_ratio_weight
+
+    ratio_count = int(node["ratio_count"])
+    if ratio_count > 0:
+        return float(node["ratio_sum"]) / ratio_count
+    return None
+
+
 def _build_treemap_figure(df: pd.DataFrame, metric: str, data_path: str) -> go.Figure:
     metric_columns = _metric_columns(metric)
     value_column = "Sum_MOC" if metric == "count" else "Sum_MAF"
+    actual_column = metric_columns["actual"]
+    expected_column = metric_columns["expected"]
     required = ["Dimensions", metric_columns["ratio"], value_column]
     _required_columns(df, required, data_path)
+    has_ratio_totals = actual_column in df.columns and expected_column in df.columns
     prepared = df.copy()
     prepared["_ratio_numeric"] = _finite_series(prepared[metric_columns["ratio"]])
 
-    parents = []
-    labels = []
-    values = []
-    colors = []
-    ratio_text = []
+    nodes: dict[str, dict[str, Any]] = {}
     for _, row in prepared.iterrows():
         parts = _split_dimensions(row["Dimensions"])
-        labels.append(parts[-1] if parts else row["Dimensions"])
-        parents.append(" / ".join(parts[:-1]) if len(parts) > 1 else "")
-        values.append(_finite_float(row[value_column]) or 0.0)
+        if not parts:
+            parts = [str(row["Dimensions"])]
+
+        value = _finite_float(row[value_column]) or 0.0
         ratio_value = _finite_float(row["_ratio_numeric"])
-        colors.append(ratio_value if ratio_value is not None else 1.0)
-        ratio_text.append(_format_number(row[metric_columns["ratio"]]))
+        actual_value = _finite_float(row[actual_column]) if has_ratio_totals else None
+        expected_value = _finite_float(row[expected_column]) if has_ratio_totals else None
+
+        for depth in range(1, len(parts) + 1):
+            node_id = " | ".join(parts[:depth])
+            parent_id = " | ".join(parts[: depth - 1]) if depth > 1 else ""
+            node = nodes.setdefault(
+                node_id,
+                {
+                    "label": parts[depth - 1],
+                    "parent": parent_id,
+                    "value": 0.0,
+                    "actual": 0.0,
+                    "expected": 0.0,
+                    "weighted_ratio_total": 0.0,
+                    "weighted_ratio_weight": 0.0,
+                    "ratio_sum": 0.0,
+                    "ratio_count": 0,
+                },
+            )
+            node["value"] += value
+            node["actual"] += actual_value or 0.0
+            node["expected"] += expected_value or 0.0
+            if ratio_value is not None:
+                if value > 0:
+                    node["weighted_ratio_total"] += ratio_value * value
+                    node["weighted_ratio_weight"] += value
+                node["ratio_sum"] += ratio_value
+                node["ratio_count"] += 1
+
+    ids = list(nodes)
+    labels = [nodes[node_id]["label"] for node_id in ids]
+    parents = [nodes[node_id]["parent"] for node_id in ids]
+    values = [nodes[node_id]["value"] for node_id in ids]
+    ratios = [
+        _treemap_ratio(nodes[node_id], has_ratio_totals=has_ratio_totals)
+        for node_id in ids
+    ]
+    colors = [ratio if ratio is not None else 1.0 for ratio in ratios]
+    ratio_text = [_format_number(ratio) for ratio in ratios]
 
     fig = go.Figure(
         go.Treemap(
+            ids=ids,
             labels=labels,
             parents=parents,
             values=values,
+            branchvalues="total",
             customdata=ratio_text,
             marker={
                 "colors": colors,
