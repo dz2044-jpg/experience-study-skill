@@ -26,7 +26,6 @@ _VALIDATION_TOOL = "run_actuarial_data_checks"
 _FEATURE_TOOLS = {"create_categorical_bands", "regroup_categorical_features"}
 _SWEEP_TOOL = "run_dimensional_sweep"
 _VISUALIZATION_TOOL = "generate_combined_report"
-_DATASET_MUTATING_TOOLS = {_PROFILE_TOOL, *_FEATURE_TOOLS}
 
 
 @dataclass(frozen=True, slots=True)

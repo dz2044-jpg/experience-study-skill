@@ -164,6 +164,125 @@ def test_actuarial_validation_flags_missing_core_actuarial_columns(tmp_path: Pat
     ]
 
 
+def test_death_exposure_validation_preserves_duplicate_count_semantics(tmp_path: Path):
+    data_path = tmp_path / "death_exposure.csv"
+    pd.DataFrame(
+        [
+            {
+                "Policy_Number": "A",
+                "Duration": 1,
+                "MAC": 1,
+                "MEC": 0.5,
+                "MOC": 1.0,
+                "MAF": 100000.0,
+                "MEF": 80000.0,
+                "Face_Amount": 100000,
+                "Issue_Age": 45,
+            },
+            {
+                "Policy_Number": "A",
+                "Duration": 1,
+                "MAC": 1,
+                "MEC": 0.5,
+                "MOC": 1.0,
+                "MAF": 100000.0,
+                "MEF": 80000.0,
+                "Face_Amount": 100000,
+                "Issue_Age": 45,
+            },
+            {
+                "Policy_Number": "A",
+                "Duration": 2,
+                "MAC": 0,
+                "MEC": 0.5,
+                "MOC": 0.5,
+                "MAF": 0.0,
+                "MEF": 80000.0,
+                "Face_Amount": 100000,
+                "Issue_Age": 45,
+            },
+            {
+                "Policy_Number": "A",
+                "Duration": 2,
+                "MAC": 0,
+                "MEC": 0.5,
+                "MOC": 0.5,
+                "MAF": 0.0,
+                "MEF": 80000.0,
+                "Face_Amount": 100000,
+                "Issue_Age": 45,
+            },
+            {
+                "Policy_Number": "B",
+                "Duration": 2,
+                "MAC": 1,
+                "MEC": 0.4,
+                "MOC": 1.0,
+                "MAF": 50000.0,
+                "MEF": 60000.0,
+                "Face_Amount": 50000,
+                "Issue_Age": 50,
+            },
+            {
+                "Policy_Number": None,
+                "Duration": 1,
+                "MAC": 1,
+                "MEC": 0.4,
+                "MOC": 1.0,
+                "MAF": 50000.0,
+                "MEF": 60000.0,
+                "Face_Amount": 50000,
+                "Issue_Age": 50,
+            },
+            {
+                "Policy_Number": None,
+                "Duration": 2,
+                "MAC": 0,
+                "MEC": 0.4,
+                "MOC": 0.5,
+                "MAF": 0.0,
+                "MEF": 60000.0,
+                "Face_Amount": 50000,
+                "Issue_Age": 50,
+            },
+            {
+                "Policy_Number": "C",
+                "Duration": None,
+                "MAC": 1,
+                "MEC": 0.4,
+                "MOC": 1.0,
+                "MAF": 50000.0,
+                "MEF": 60000.0,
+                "Face_Amount": 50000,
+                "Issue_Age": 50,
+            },
+            {
+                "Policy_Number": "C",
+                "Duration": 2,
+                "MAC": 0,
+                "MEC": 0.4,
+                "MOC": 0.5,
+                "MAF": 0.0,
+                "MEF": 60000.0,
+                "Face_Amount": 50000,
+                "Issue_Age": 50,
+            },
+        ]
+    ).to_csv(data_path, index=False)
+    context = ToolExecutionContext(
+        session_id="session-a",
+        output_dir=tmp_path / "sessions" / "session-a",
+    )
+
+    result = run_actuarial_data_checks(context=context, data_path=str(data_path))
+
+    assert result["ok"] is True
+    assert (
+        "Death exposure logic violated by 4 rows after the death duration."
+        in result["data"]["issues"]
+    )
+
+
 def test_dimensional_sweep_blanks_invalid_ratios_and_sorts_them_last(tmp_path: Path):
     data_path = tmp_path / "prepared.csv"
     pd.DataFrame(

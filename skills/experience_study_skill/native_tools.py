@@ -1,4 +1,9 @@
-"""Compatibility layer for deterministic experience study tools."""
+"""Compatibility layer for deterministic experience study tools.
+
+Public tool handlers remain registered here for legacy imports and skill loading.
+New deterministic logic should live in the focused modules, not in this file.
+Avoid adding new private re-exports unless required for compatibility tests.
+"""
 
 from __future__ import annotations
 

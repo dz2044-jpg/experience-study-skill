@@ -9,6 +9,7 @@ from skills.experience_study_skill.ai_baselines import (
     ACTION_TITLES,
     DEFAULT_NEXT_REVIEW_STEPS,
 )
+from skills.experience_study_skill.ai_cautions import collect_packet_caution_flags
 from skills.experience_study_skill.ai_models import (
     AIActionName,
     AIActionResponse,
@@ -97,16 +98,6 @@ def requested_evidence_ref_not_found(
     return not any(row.evidence_ref == requested_ref for row in packet.rows)
 
 
-def _collect_caution_flags(packet: AISweepPacket) -> list[str]:
-    flags: list[str] = []
-    for row in packet.rows:
-        flags.extend(row.caution_flags)
-        if row.low_credibility and row.masking_reason:
-            flags.append(row.masking_reason)
-    flags.extend(warning.code for warning in packet.warnings)
-    return list(dict.fromkeys(flags))
-
-
 def build_fallback_response(
     *,
     action_name: AIActionName,
@@ -118,7 +109,7 @@ def build_fallback_response(
 
     selected_rows = select_action_rows(action_name, packet, action_context)
     evidence_refs = [row.evidence_ref for row in selected_rows]
-    caution_flags = _collect_caution_flags(packet)
+    caution_flags = collect_packet_caution_flags(packet)
     if requested_evidence_ref_not_found(action_name, packet, action_context):
         caution_flags.append("requested_evidence_ref_not_found")
     if validation and validation.blocked_issues:

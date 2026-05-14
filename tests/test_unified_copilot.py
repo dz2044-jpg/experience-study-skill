@@ -96,6 +96,21 @@ def test_extract_top_n_caps_large_requests(tmp_path: Path):
     assert copilot._extract_top_n("Run a sweep and show the top 500 cohorts.") == 20
 
 
+def test_unified_copilot_retains_limited_compatibility_shims(tmp_path: Path):
+    copilot = UnifiedCopilot(session_id="session-a", output_base_dir=tmp_path / "sessions")
+
+    assert callable(copilot._summarize_intent)
+    assert callable(copilot._enabled_tool_names)
+    assert callable(copilot._extract_top_n)
+    assert callable(copilot._sanitize_user_facing_text)
+    assert not hasattr(copilot, "_extract_depth")
+    assert not hasattr(copilot, "_format_schema_result")
+    assert (
+        copilot._sanitize_user_facing_text("<thinking>Internal.</thinking>\nVisible.")
+        == "Visible."
+    )
+
+
 def test_public_tool_names_remain_stable():
     exposed_schema_tool_names = {
         spec["function"]["name"] for spec in get_tool_specs()

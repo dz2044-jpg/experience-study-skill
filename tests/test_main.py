@@ -80,6 +80,49 @@ class _FakeStreamlitApp:
         return _FakeResponsePlaceholder()
 
 
+class _FakeVisualizationStreamlit:
+    def __init__(self) -> None:
+        self.button_calls: list[dict[str, object]] = []
+        self.download_calls: list[dict[str, object]] = []
+        self.column_specs: list[list[int]] = []
+        self.preview_html: str | None = None
+        self.components = SimpleNamespace(
+            v1=SimpleNamespace(html=self._render_component_html)
+        )
+
+    def container(self, *, border: bool) -> _NullContext:
+        return _NullContext()
+
+    def markdown(self, message: str) -> None:
+        return None
+
+    def caption(self, message: str) -> None:
+        return None
+
+    def columns(self, spec: list[int]) -> list[_NullContext]:
+        self.column_specs.append(spec)
+        return [_NullContext() for _ in spec]
+
+    def button(self, label: str, **kwargs: object) -> bool:
+        self.button_calls.append({"label": label, **kwargs})
+        return False
+
+    def download_button(self, label: str, **kwargs: object) -> None:
+        self.download_calls.append({"label": label, **kwargs})
+
+    def expander(self, label: str, *, expanded: bool) -> _NullContext:
+        return _NullContext()
+
+    def _render_component_html(
+        self,
+        html: str,
+        *,
+        height: int,
+        scrolling: bool,
+    ) -> None:
+        self.preview_html = html
+
+
 class _FakeRenderCopilot:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
@@ -433,6 +476,36 @@ def test_ai_workflow_snapshot_handles_packet_build_failure(
         "Stored AI response freshness could not be checked against the current sweep packet."
     )
     assert "AI workflow packet construction failed" in caplog.text
+
+
+def test_render_visualization_card_offers_browser_and_html_download(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    html_path = tmp_path / "combined_ae_report.html"
+    html_path.write_text("<html><body>report</body></html>", encoding="utf-8")
+    fake_st = _FakeVisualizationStreamlit()
+    monkeypatch.setattr(main, "st", fake_st)
+
+    main._render_visualization_card(str(html_path), widget_key_prefix="unit")
+
+    assert fake_st.column_specs == [[1, 1, 3]]
+    assert fake_st.button_calls == [
+        {
+            "label": "Open in Browser",
+            "key": "unit-open-visualization",
+        }
+    ]
+    assert fake_st.download_calls == [
+        {
+            "label": "Download HTML",
+            "data": html_path.read_bytes(),
+            "file_name": html_path.name,
+            "mime": "text/html",
+            "key": "unit-download-visualization",
+        }
+    ]
+    assert fake_st.preview_html == "<html><body>report</body></html>"
 
 
 def test_render_app_renders_ai_panel_after_current_chat_processing(monkeypatch) -> None:

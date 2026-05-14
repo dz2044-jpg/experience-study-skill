@@ -143,14 +143,20 @@ def run_actuarial_data_checks(
             )
 
     if "Policy_Number" in df.columns and "Duration" in df.columns and "MAC" in df.columns:
-        death_rows = df[df["MAC"] == 1][["Policy_Number", "Duration"]]
-        violations = 0
-        for _, row in death_rows.iterrows():
-            higher_duration = df[
-                (df["Policy_Number"] == row["Policy_Number"])
-                & (df["Duration"] > row["Duration"])
-            ]
-            violations += len(higher_duration)
+        death_rows = df.loc[df["MAC"] == 1, ["Policy_Number", "Duration"]].dropna(
+            subset=["Policy_Number", "Duration"]
+        )
+        exposure_rows = df[["Policy_Number", "Duration"]].dropna(
+            subset=["Policy_Number", "Duration"]
+        )
+        merged_exposure = death_rows.merge(
+            exposure_rows,
+            on="Policy_Number",
+            suffixes=("_death", "_later"),
+        )
+        violations = int(
+            (merged_exposure["Duration_later"] > merged_exposure["Duration_death"]).sum()
+        )
         if violations:
             issues.append(
                 f"Death exposure logic violated by {violations} rows after the death duration."

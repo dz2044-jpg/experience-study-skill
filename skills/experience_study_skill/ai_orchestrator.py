@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from skills.experience_study_skill.ai_cautions import collect_packet_caution_flags
 from skills.experience_study_skill.ai_fallbacks import (
     build_fallback_response,
     requested_evidence_ref_not_found,
@@ -17,16 +18,6 @@ from skills.experience_study_skill.ai_models import (
 from skills.experience_study_skill.ai_skill_loader import AI_ACTION_NAMES
 from skills.experience_study_skill.ai_skill_renderer import render_action_prompt
 from skills.experience_study_skill.ai_validation import validate_ai_response
-
-
-def _packet_caution_flags(packet: AISweepPacket) -> list[str]:
-    flags: list[str] = []
-    for row in packet.rows:
-        flags.extend(row.caution_flags)
-        if row.low_credibility and row.masking_reason:
-            flags.append(row.masking_reason)
-    flags.extend(warning.code for warning in packet.warnings)
-    return list(dict.fromkeys(flags))
 
 
 def run_ai_action(
@@ -99,7 +90,7 @@ def run_ai_action(
         source_mode="llm",
         response_text=text,
         evidence_refs=evidence_refs,
-        caution_flags=_packet_caution_flags(packet),
+        caution_flags=collect_packet_caution_flags(packet),
         next_review_steps=[
             "Review evidence refs against the deterministic sweep artifact.",
             "Confirm cautions and credibility before report use.",

@@ -60,12 +60,6 @@ class CopilotEvent:
 class UnifiedCopilot:
     """Single-agent copilot backed by a self-contained skill package."""
 
-    _MAX_SWEEP_TOP_N = FallbackPlanner._MAX_SWEEP_TOP_N
-    _PATH_RE = FallbackPlanner._PATH_RE
-    _FILTER_PATTERNS = FallbackPlanner._FILTER_PATTERNS
-    _TEXT_OPERATOR_MAP = FallbackPlanner._TEXT_OPERATOR_MAP
-    _THINKING_BLOCK_RE = ResponseFormatter._THINKING_BLOCK_RE
-
     def __init__(
         self,
         *,
@@ -118,31 +112,11 @@ class UnifiedCopilot:
         for chunk in re.findall(r"\S+\s*", text):
             yield CopilotEvent("text_delta", message=chunk)
 
+    # Compatibility shims retained for tests and likely legacy callers. New
+    # runtime code should use the extracted planner/formatter modules directly.
     @classmethod
     def _sanitize_user_facing_text(cls, text: str) -> str:
         return ResponseFormatter.sanitize_user_facing_text(text)
-
-    def _finalize_response(
-        self,
-        user_input: str,
-        text: str,
-        *,
-        fallback_text: str = "",
-    ) -> Iterator[CopilotEvent]:
-        final_text = self._sanitize_user_facing_text(text)
-        if not final_text and fallback_text:
-            final_text = self._sanitize_user_facing_text(fallback_text)
-        self.history.append({"role": "user", "content": user_input})
-        self.history.append({"role": "assistant", "content": final_text})
-        yield from self._stream_text(final_text)
-        yield CopilotEvent(
-            "final",
-            message=final_text,
-            data={"artifact_state": self.state.to_event_payload()},
-        )
-
-    def _extract_data_path(self, user_input: str) -> str | None:
-        return self.fallback_planner._extract_data_path(user_input)
 
     def _summarize_intent(self, user_input: str) -> IntentSummary:
         lowered = self.fallback_planner._PATH_RE.sub(" ", user_input).lower()
@@ -177,7 +151,7 @@ class UnifiedCopilot:
             for flag in (wants_profile, wants_band, wants_analysis, wants_visualize)
         ) >= 3
         return IntentSummary(
-            explicit_data_path=self._extract_data_path(user_input),
+            explicit_data_path=self.fallback_planner._extract_data_path(user_input),
             wants_profile=wants_profile,
             wants_schema=wants_schema,
             wants_validate=wants_validate,
@@ -188,15 +162,6 @@ class UnifiedCopilot:
             wants_full_pipeline=wants_full_pipeline,
         )
 
-    def _guard_missing_prerequisites(
-        self,
-        intent: IntentSummary,
-        *,
-        current_state: SessionArtifactState | None = None,
-    ) -> str | None:
-        state = current_state or self.state
-        return guard_missing_prerequisites(intent, state)
-
     def _enabled_tool_names(
         self,
         intent: IntentSummary,
@@ -206,90 +171,27 @@ class UnifiedCopilot:
         state = current_state or self.state
         return enabled_tool_names(intent, state)
 
-    def _extract_depth(self, user_input: str) -> int:
-        return self.fallback_planner._extract_depth(user_input)
-
     def _extract_top_n(self, user_input: str) -> int:
         return self.fallback_planner._extract_top_n(user_input)
 
-    def _extract_min_mac(self, user_input: str) -> int:
-        return self.fallback_planner._extract_min_mac(user_input)
-
-    def _extract_sort_by(self, user_input: str) -> str:
-        return self.fallback_planner._extract_sort_by(user_input)
-
-    def _extract_metric(self, user_input: str) -> str:
-        return self.fallback_planner._extract_metric(user_input)
-
-    def _extract_selected_columns(self, user_input: str) -> list[str] | None:
-        return self.fallback_planner._extract_selected_columns(user_input)
-
-    def _parse_scalar_value(self, value: str) -> str | int | float:
-        return self.fallback_planner._parse_scalar_value(value)
-
-    def _parse_filter_clause(self, clause: str) -> dict[str, Any] | None:
-        return self.fallback_planner._parse_filter_clause(clause)
-
-    def _extract_filters(self, user_input: str) -> list[dict[str, Any]]:
-        return self.fallback_planner._extract_filters(user_input)
-
-    def _extract_band_args(self, user_input: str, intent: IntentSummary) -> dict[str, Any] | None:
-        return self.fallback_planner._extract_band_args(user_input, intent)
-
-    def _extract_regroup_args(self, user_input: str, intent: IntentSummary) -> dict[str, Any] | None:
-        return self.fallback_planner._extract_regroup_args(user_input, intent)
-
-    def _extract_sweep_args(self, user_input: str) -> dict[str, Any]:
-        return self.fallback_planner._extract_sweep_args(user_input)
-
-    def _extract_visualization_args(self, user_input: str) -> dict[str, Any]:
-        return self.fallback_planner._extract_visualization_args(user_input)
-
-    def _extract_schema_args(self, intent: IntentSummary) -> dict[str, Any]:
-        return self.fallback_planner._extract_schema_args(intent)
-
-    def _build_fallback_plan(
+    def _finalize_response(
         self,
         user_input: str,
-        intent: IntentSummary,
-    ) -> tuple[list[tuple[str, dict[str, Any]]], str | None]:
-        return self.fallback_planner._build_fallback_plan(user_input, intent)
-
-    def _format_schema_result(self, result: dict[str, Any]) -> str:
-        return self.response_formatter.format_schema_result(result)
-
-    def _format_profile_result(self, result: dict[str, Any]) -> str:
-        return self.response_formatter.format_profile_result(result)
-
-    @staticmethod
-    def _format_sweep_value(value: Any) -> str:
-        return ResponseFormatter.format_sweep_value(value)
-
-    def _analysis_summary_table(self, rows: list[dict[str, Any]]) -> str:
-        return self.response_formatter.analysis_summary_table(rows)
-
-    def _analysis_summary_sections(
-        self,
-        result: dict[str, Any],
+        text: str,
         *,
-        include_intro: bool,
-    ) -> list[str]:
-        return self.response_formatter.analysis_summary_sections(
-            result,
-            include_intro=include_intro,
+        fallback_text: str = "",
+    ) -> Iterator[CopilotEvent]:
+        final_text = self._sanitize_user_facing_text(text)
+        if not final_text and fallback_text:
+            final_text = self._sanitize_user_facing_text(fallback_text)
+        self.history.append({"role": "user", "content": user_input})
+        self.history.append({"role": "assistant", "content": final_text})
+        yield from self._stream_text(final_text)
+        yield CopilotEvent(
+            "final",
+            message=final_text,
+            data={"artifact_state": self.state.to_event_payload()},
         )
-
-    def _format_analysis_result(self, result: dict[str, Any]) -> str:
-        return self.response_formatter.format_analysis_result(result)
-
-    def _format_compact_result(self, result: dict[str, Any]) -> str:
-        return self.response_formatter.format_compact_result(result)
-
-    def _next_steps(self) -> list[str]:
-        return self.response_formatter.next_steps()
-
-    def _summarize_tool_results(self, results: list[dict[str, Any]]) -> str:
-        return self.response_formatter.summarize_tool_results(results)
 
     @staticmethod
     def _audit_path_snapshot(path: str | Path | None) -> dict[str, str] | None:
@@ -371,7 +273,7 @@ class UnifiedCopilot:
                     "filters": args.get("filters", []),
                     "selected_columns": args.get("selected_columns"),
                     "min_mac": args.get("min_mac", 0),
-                    "top_n": args.get("top_n", self._MAX_SWEEP_TOP_N),
+                    "top_n": args.get("top_n", FallbackPlanner._MAX_SWEEP_TOP_N),
                     "sort_by": args.get("sort_by", "AE_Ratio_Amount"),
                 }
             )
@@ -832,7 +734,7 @@ class UnifiedCopilot:
         return result, events
 
     def _fallback_process(self, user_input: str, intent: IntentSummary) -> Iterator[CopilotEvent]:
-        plan, guidance = self._build_fallback_plan(user_input, intent)
+        plan, guidance = self.fallback_planner._build_fallback_plan(user_input, intent)
         if guidance:
             yield from self._finalize_response(user_input, guidance)
             return
@@ -848,7 +750,10 @@ class UnifiedCopilot:
                 yield from self._finalize_response(user_input, result["message"])
                 return
 
-        yield from self._finalize_response(user_input, self._summarize_tool_results(tool_results))
+        yield from self._finalize_response(
+            user_input,
+            self.response_formatter.summarize_tool_results(tool_results),
+        )
 
     def _llm_messages(self, user_input: str) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
@@ -879,7 +784,7 @@ class UnifiedCopilot:
             yield from self._fallback_process(user_input, intent)
             return
 
-        guard_message = self._guard_missing_prerequisites(intent)
+        guard_message = guard_missing_prerequisites(intent, self.state)
         if guard_message:
             yield from self._finalize_response(user_input, guard_message)
             return
@@ -888,7 +793,7 @@ class UnifiedCopilot:
         tool_results: list[dict[str, Any]] = []
 
         for _ in range(6):
-            enabled_tools = self._enabled_tool_names(intent)
+            enabled_tools = enabled_tool_names(intent, self.state)
             if not enabled_tools:
                 break
             yield CopilotEvent("status", message="Requesting the next action from the model.")
@@ -914,7 +819,7 @@ class UnifiedCopilot:
             message = completion.choices[0].message
             tool_calls = message.tool_calls or []
             if not tool_calls:
-                fallback_text = self._summarize_tool_results(tool_results)
+                fallback_text = self.response_formatter.summarize_tool_results(tool_results)
                 final_text = message.content or fallback_text
                 yield from self._finalize_response(
                     user_input,
@@ -958,4 +863,7 @@ class UnifiedCopilot:
                     yield from self._finalize_response(user_input, result["message"])
                     return
 
-        yield from self._finalize_response(user_input, self._summarize_tool_results(tool_results))
+        yield from self._finalize_response(
+            user_input,
+            self.response_formatter.summarize_tool_results(tool_results),
+        )

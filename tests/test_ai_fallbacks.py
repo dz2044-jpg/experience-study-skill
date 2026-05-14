@@ -3,7 +3,13 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from skills.experience_study_skill.ai_cautions import collect_packet_caution_flags
 from skills.experience_study_skill.ai_fallbacks import build_fallback_response
+from skills.experience_study_skill.ai_models import (
+    AICohortRow,
+    AISweepPacket,
+    AIValidationIssue,
+)
 from skills.experience_study_skill.ai_orchestrator import run_ai_action
 from skills.experience_study_skill.ai_packets import build_latest_sweep_packet
 from skills.experience_study_skill.ai_skill_renderer import render_action_prompt
@@ -73,6 +79,51 @@ def _write_sweep(path: Path) -> Path:
     return path
 
 
+def _packet_with_caution_flags(tmp_path: Path) -> AISweepPacket:
+    return AISweepPacket(
+        source_artifact_path=str(tmp_path / "sweep.csv"),
+        source_content_hash="hash-a",
+        rows=[
+            AICohortRow(
+                evidence_ref="row_0001",
+                Dimensions="Gender=F",
+                Sum_MAC=0,
+                Sum_MOC=8.0,
+                Sum_MEC=1.2,
+                Sum_MAF=0.0,
+                Sum_MEF=85000.0,
+                AE_Ratio_Count=0.0,
+                AE_Ratio_Amount=0.0,
+                low_credibility=True,
+                masking_reason="low_volume",
+                caution_flags=["dimension_parse_warning", "low_volume"],
+            ),
+            AICohortRow(
+                evidence_ref="row_0002",
+                Dimensions="Gender=M",
+                Sum_MAC=2,
+                Sum_MOC=10.0,
+                Sum_MEC=1.0,
+                Sum_MAF=100000.0,
+                Sum_MEF=80000.0,
+                AE_Ratio_Count=2.0,
+                AE_Ratio_Amount=1.25,
+                caution_flags=["dimension_parse_warning"],
+            ),
+        ],
+        warnings=[
+            AIValidationIssue(
+                code="packet_warning",
+                message="Packet warning.",
+            ),
+            AIValidationIssue(
+                code="low_volume",
+                message="Duplicate packet warning.",
+            ),
+        ],
+    )
+
+
 class _FakeClient:
     def __init__(self, text: str) -> None:
         self.chat = SimpleNamespace(completions=self)
@@ -99,6 +150,26 @@ def test_fallback_response_includes_required_review_context(tmp_path: Path):
     assert "Caution flags:" in response.response_text
     assert "Next review steps:" in response.response_text
     assert "Packet fingerprint:" in response.response_text
+
+
+def test_fallback_and_orchestrator_share_ordered_packet_caution_flags(tmp_path: Path):
+    packet = _packet_with_caution_flags(tmp_path)
+    expected_flags = ["dimension_parse_warning", "low_volume", "packet_warning"]
+
+    fallback_response = build_fallback_response(
+        action_name="summarize_sweep",
+        packet=packet,
+    )
+    llm_response = run_ai_action(
+        action_name="summarize_sweep",
+        packet=packet,
+        client=_FakeClient("This cohort shows elevated A/E on an amount basis."),
+    )
+
+    assert collect_packet_caution_flags(packet) == expected_flags
+    assert fallback_response.caution_flags == expected_flags
+    assert llm_response.source_mode == "llm"
+    assert llm_response.caution_flags == expected_flags
 
 
 def test_orchestrator_falls_back_without_client(tmp_path: Path):

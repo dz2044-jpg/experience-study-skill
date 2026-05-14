@@ -132,10 +132,11 @@ def _render_visualization_card(visualization_path: str | None, widget_key_prefix
         return
 
     resolved_path = html_path.resolve()
+    html_bytes = resolved_path.read_bytes()
     with st.container(border=True):
         st.markdown("##### Generated Visualization Artifact")
         st.caption(f"`{resolved_path.name}`")
-        col1, col2 = st.columns([1, 4])
+        col1, col2, col3 = st.columns([1, 1, 3])
         with col1:
             if st.button(
                 "Open in Browser",
@@ -143,7 +144,15 @@ def _render_visualization_card(visualization_path: str | None, widget_key_prefix
             ):
                 webbrowser.open(resolved_path.as_uri())
         with col2:
-            st.caption("Open the standalone report or preview it inline below.")
+            st.download_button(
+                "Download HTML",
+                data=html_bytes,
+                file_name=resolved_path.name,
+                mime="text/html",
+                key=f"{widget_key_prefix}-download-visualization",
+            )
+        with col3:
+            st.caption("Open or download the standalone report, or preview it inline below.")
         with st.expander("Preview Visualization Inline", expanded=False):
             st.components.v1.html(
                 resolved_path.read_text(encoding="utf-8"),
