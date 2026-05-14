@@ -159,7 +159,10 @@ class RunDimensionalSweepInput(ToolInputModel):
         default=1,
         ge=1,
         le=3,
-        description="Dimensional interaction depth to evaluate.",
+        description=(
+            "Dimensional interaction depth to evaluate. Supports 1-way, 2-way, "
+            "and 3-way sweeps when the prepared dataset has enough eligible dimensions."
+        ),
     )
     min_mac: int = Field(
         default=0,

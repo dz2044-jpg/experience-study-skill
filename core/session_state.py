@@ -10,6 +10,9 @@ from core.artifact_manifest import read_artifact_manifest
 from core.methodology_log import read_methodology_log
 
 
+SUPPORTED_SWEEP_DEPTHS = [1, 2, 3]
+
+
 @dataclass(slots=True)
 class SessionArtifactState:
     """Tracks the session-local artifact graph owned by the copilot."""
@@ -160,7 +163,7 @@ class SessionArtifactState:
 
     def to_prompt(self) -> str:
         self.refresh()
-        available_depths = sorted(self.latest_sweep_paths_by_depth)
+        existing_sweep_artifact_depths = sorted(self.latest_sweep_paths_by_depth)
         sweep_paths_by_depth = {
             depth: str(path) for depth, path in sorted(self.latest_sweep_paths_by_depth.items())
         }
@@ -174,7 +177,8 @@ class SessionArtifactState:
             f"- latest_sweep_ready: {self.latest_sweep_ready}",
             f"- latest_sweep_path: {self.latest_sweep_path or 'None'}",
             f"- latest_sweep_paths_by_depth: {sweep_paths_by_depth}",
-            f"- available_sweep_depths: {available_depths}",
+            f"- existing_sweep_artifact_depths: {existing_sweep_artifact_depths}",
+            f"- supported_sweep_depths: {SUPPORTED_SWEEP_DEPTHS}",
             f"- latest_visualization_ready: {self.latest_visualization_ready}",
             f"- latest_visualization_path: {self.latest_visualization_path or 'None'}",
             f"- audit_ready: {self.audit_ready}",
@@ -197,7 +201,7 @@ class SessionArtifactState:
         """
 
         self.refresh()
-        available_depths = sorted(self.latest_sweep_paths_by_depth)
+        existing_sweep_artifact_depths = sorted(self.latest_sweep_paths_by_depth)
         sweep_refs_by_depth = {
             depth: path.name for depth, path in sorted(self.latest_sweep_paths_by_depth.items())
         }
@@ -217,7 +221,8 @@ class SessionArtifactState:
             f"- latest_sweep_ready: {self.latest_sweep_ready}",
             f"- latest_sweep_ref: {self._artifact_ref(self.latest_sweep_path)}",
             f"- latest_sweep_refs_by_depth: {sweep_refs_by_depth}",
-            f"- available_sweep_depths: {available_depths}",
+            f"- existing_sweep_artifact_depths: {existing_sweep_artifact_depths}",
+            f"- supported_sweep_depths: {SUPPORTED_SWEEP_DEPTHS}",
             f"- latest_visualization_ready: {self.latest_visualization_ready}",
             f"- latest_visualization_ref: {self._artifact_ref(self.latest_visualization_path)}",
             f"- audit_ready: {self.audit_ready}",

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from core.copilot_agent import UnifiedCopilot
-from core.session_state import SessionArtifactState
+from core.session_state import SUPPORTED_SWEEP_DEPTHS, SessionArtifactState
 from tests.conftest import final_message
 
 
@@ -68,6 +68,9 @@ def test_prompt_state_contract_exposes_readiness_flags_and_artifact_paths(
     assert "- latest_sweep_ready: True" in prompt_state
     assert f"- latest_sweep_path: {copilot.state.latest_sweep_path}" in prompt_state
     assert "- latest_sweep_paths_by_depth: {1:" in prompt_state
+    assert "- existing_sweep_artifact_depths: [1]" in prompt_state
+    assert f"- supported_sweep_depths: {SUPPORTED_SWEEP_DEPTHS}" in prompt_state
+    assert "available_sweep_depths" not in prompt_state
     assert "- latest_visualization_ready: False" in prompt_state
 
 
@@ -76,14 +79,15 @@ def test_llm_prompt_omits_absolute_paths_but_keeps_artifact_refs(tmp_path: Path)
     raw_path = tmp_path / "private" / "synthetic_inforce.csv"
     prepared_path = state.output_dir / "analysis_inforce.parquet"
     sweep_path = state.output_dir / "sweep_summary.csv"
+    depth_path = state.output_dir / "sweep_summary_latest_1.csv"
     visualization_path = state.output_dir / "combined_ae_report.html"
-    for path in (raw_path, prepared_path, sweep_path, visualization_path):
+    for path in (raw_path, prepared_path, sweep_path, depth_path, visualization_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("artifact", encoding="utf-8")
     state.raw_input_path = raw_path
     state.prepared_dataset_path = prepared_path
     state.latest_sweep_path = sweep_path
-    state.latest_sweep_paths_by_depth = {1: state.output_dir / "sweep_summary_latest_1.csv"}
+    state.latest_sweep_paths_by_depth = {1: depth_path}
     state.latest_visualization_path = visualization_path
     state.methodology_log_path = state.default_methodology_log_path
     state.artifact_manifest_path = state.default_artifact_manifest_path
@@ -96,9 +100,35 @@ def test_llm_prompt_omits_absolute_paths_but_keeps_artifact_refs(tmp_path: Path)
     assert "- raw_input_ref: current source dataset (path omitted)" in prompt_state
     assert "- prepared_dataset_ref: analysis_inforce.parquet" in prompt_state
     assert "- latest_sweep_ref: sweep_summary.csv" in prompt_state
+    assert "- latest_sweep_refs_by_depth: {1: 'sweep_summary_latest_1.csv'}" in prompt_state
+    assert "- existing_sweep_artifact_depths: [1]" in prompt_state
+    assert f"- supported_sweep_depths: {SUPPORTED_SWEEP_DEPTHS}" in prompt_state
+    assert "available_sweep_depths" not in prompt_state
     assert "- latest_visualization_ref: combined_ae_report.html" in prompt_state
     assert "- latest_state_fingerprint: state-a" in prompt_state
     assert "omit" in prompt_state
+
+
+def test_llm_prompt_does_not_treat_existing_sweep_artifacts_as_capabilities(
+    tmp_path: Path,
+) -> None:
+    state = SessionArtifactState(session_id="session-a", output_base_dir=tmp_path)
+    prepared_path = state.output_dir / "analysis_inforce.parquet"
+    sweep_path = state.output_dir / "sweep_summary.csv"
+    depth_path = state.output_dir / "sweep_summary_latest_1.csv"
+    for path in (prepared_path, sweep_path, depth_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("artifact", encoding="utf-8")
+    state.prepared_dataset_path = prepared_path
+    state.latest_sweep_path = sweep_path
+    state.latest_sweep_paths_by_depth = {1: depth_path}
+
+    prompt_state = state.to_llm_prompt()
+
+    assert "- prepared_dataset_ready: True" in prompt_state
+    assert "- existing_sweep_artifact_depths: [1]" in prompt_state
+    assert "- supported_sweep_depths: [1, 2, 3]" in prompt_state
+    assert "available_sweep_depths" not in prompt_state
 
 
 def test_llm_messages_use_safe_session_prompt(tmp_path: Path):

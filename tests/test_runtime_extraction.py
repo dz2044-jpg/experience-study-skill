@@ -2,6 +2,8 @@ from pathlib import Path
 
 import inspect
 
+import pytest
+
 from core.copilot_agent import (
     CopilotEvent,
     IntentSummary,
@@ -241,6 +243,26 @@ def test_fallback_planner_separates_min_mac_phrase_from_selected_columns(tmp_pat
     assert two_way_args["depth"] == 2
     assert two_way_args["selected_columns"] == ["Gender", "Risk_Class"]
     assert two_way_args["min_mac"] == 1
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Run a 2-way sweep on Gender and Risk_Class.",
+        "Run a pairwise sweep on Gender and Risk_Class.",
+        "Run all pairs across eligible dimensions.",
+    ],
+)
+def test_fallback_planner_maps_two_way_phrasing_to_depth_two(
+    tmp_path: Path,
+    prompt: str,
+):
+    state = SessionArtifactState(session_id="session-a", output_base_dir=tmp_path)
+    planner = FallbackPlanner(state)
+
+    args = planner._extract_sweep_args(prompt)
+
+    assert args["depth"] == 2
 
 
 def test_deterministic_fallback_event_order_remains_stable(
