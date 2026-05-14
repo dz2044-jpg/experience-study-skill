@@ -1,6 +1,6 @@
 # Testing Checklist
 
-Last updated: May 4, 2026
+Last updated: May 14, 2026
 
 This checklist uses expected response patterns rather than exact session paths, because generated artifact paths include session-specific folders.
 
@@ -23,7 +23,7 @@ The app's current intended workflow is deterministic first, then AI interpretati
 | 13 | **Run a 2-way sweep on Gender and Smoker where Risk_Class = Standard.** | Should apply `Risk_Class = Standard` as a row filter first, then run a 2-way sweep on `Gender` and `Smoker`. Expected result should contain only Standard risk class records. |
 | 14 | **Run a 2-way sweep on Gender and Face_Amount.** | Expected failure. `Face_Amount` should not be eligible as a sweep dimension because semantic numeric non-dimensions are excluded. The response should say the column is not eligible as a sweep dimension. |
 | 15 | **Run a 1-way sweep on BadColumn.** | Expected failure. Response should say `BadColumn` was not found in the prepared dataset and may return available columns. |
-| 16 | **Generate the combined report.** | Should generate a standalone HTML visualization from the latest sweep artifact. Expected response should confirm the combined report was generated and provide/open a visualization artifact. The Streamlit UI should also show a visualization card with "Open in Browser", "Download HTML", and inline preview. |
+| 16 | **Generate the combined report.** | Should generate a standalone HTML visualization from the latest sweep artifact. Expected response should confirm the combined report was generated and provide a visualization artifact. The Streamlit UI should also show a visualization card with "Download HTML" and inline preview. |
 | 17 | **Generate the combined report for count.** | Should generate the report using the count metric instead of amount. Expected artifact is still an HTML combined A/E report. |
 | 18 | **Clear Conversation, then open AI Interpretation Panel.** | Expected: AI buttons should be disabled because there is no latest sweep artifact, artifact manifest, state fingerprint, or sweep manifest hash. The panel should show artifact readiness status. |
 | 19 | **After running a sweep, use AI Interpretation Panel -> Summarize Latest Sweep.** | Expected: button should be enabled only after sweep artifact, manifest, and fingerprint are available. Response should show summary text, source mode (`fallback` or `llm`), evidence references, caution flags, next review steps, and freshness status. |

@@ -54,6 +54,41 @@ def test_ai_artifact_readiness_uses_manifest_hash_and_file_hash(tmp_path: Path) 
     )
 
 
+def test_ai_artifact_readiness_skips_file_hash_when_requested(tmp_path: Path) -> None:
+    sweep_path = tmp_path / "sweep_summary.csv"
+    sweep_path.write_text("Dimensions,Sum_MAC\nGender=M,2\n", encoding="utf-8")
+    manifest_path = tmp_path / "audit" / "artifact_manifest.json"
+    upsert_artifact_entry(
+        manifest_path,
+        artifact_type="sweep_summary",
+        path=sweep_path,
+        generating_tool="run_dimensional_sweep",
+        parameters={"depth": 1},
+        source_artifacts=[],
+    )
+
+    readiness = get_ai_artifact_readiness(
+        SimpleNamespace(
+            latest_sweep_path=sweep_path,
+            artifact_manifest_path=manifest_path,
+            latest_state_fingerprint="state-a",
+            refresh=_refresh_noop,
+        ),
+        include_file_hash=False,
+    )
+
+    assert readiness.ready is True
+    assert readiness.actual_sweep_content_hash is None
+    assert readiness.sweep_hash_matches_file is None
+    assert readiness.checks == {
+        "latest_sweep": True,
+        "artifact_manifest": True,
+        "state_fingerprint": True,
+        "sweep_manifest_hash": True,
+        "sweep_hash_matches_file": None,
+    }
+
+
 def test_ai_artifact_readiness_blocks_manifest_file_hash_mismatch(
     tmp_path: Path,
 ) -> None:

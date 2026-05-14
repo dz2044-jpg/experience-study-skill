@@ -124,6 +124,29 @@ class _FakeVisualizationStreamlit:
         self.preview_html = html
 
 
+class _FakeAIStatusStreamlit:
+    def __init__(self) -> None:
+        self.success_calls: list[str] = []
+        self.info_calls: list[str] = []
+        self.error_calls: list[str] = []
+        self.caption_calls: list[str] = []
+
+    def caption(self, message: str) -> None:
+        self.caption_calls.append(message)
+
+    def columns(self, count: int) -> list[_NullContext]:
+        return [_NullContext() for _ in range(count)]
+
+    def success(self, message: str) -> None:
+        self.success_calls.append(message)
+
+    def info(self, message: str) -> None:
+        self.info_calls.append(message)
+
+    def error(self, message: str) -> None:
+        self.error_calls.append(message)
+
+
 class _FakeRenderCopilot:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
@@ -484,7 +507,7 @@ def test_ai_workflow_snapshot_handles_packet_build_failure(
     assert "AI workflow packet construction failed" in caplog.text
 
 
-def test_render_visualization_card_offers_browser_and_html_download(
+def test_render_visualization_card_offers_html_download_and_inline_preview(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -495,13 +518,8 @@ def test_render_visualization_card_offers_browser_and_html_download(
 
     main._render_visualization_card(str(html_path), widget_key_prefix="unit")
 
-    assert fake_st.column_specs == [[1, 1, 3]]
-    assert fake_st.button_calls == [
-        {
-            "label": "Open in Browser",
-            "key": "unit-open-visualization",
-        }
-    ]
+    assert fake_st.column_specs == [[1, 3]]
+    assert fake_st.button_calls == []
     assert fake_st.download_calls == [
         {
             "label": "Download HTML",
@@ -512,6 +530,26 @@ def test_render_visualization_card_offers_browser_and_html_download(
         }
     ]
     assert fake_st.preview_html == "<html><body>report</body></html>"
+
+
+def test_render_ai_status_marks_skipped_hash_check_as_not_run(monkeypatch) -> None:
+    fake_st = _FakeAIStatusStreamlit()
+    monkeypatch.setattr(main, "st", fake_st)
+    readiness = main._AIArtifactReadiness(
+        checks={
+            "latest_sweep": True,
+            "artifact_manifest": True,
+            "state_fingerprint": True,
+            "sweep_manifest_hash": True,
+            "sweep_hash_matches_file": None,
+        }
+    )
+
+    main._render_ai_status(readiness)
+
+    assert fake_st.info_calls == ["Manifest/file hash match not run"]
+    assert "Manifest/file hash match" not in fake_st.error_calls
+    assert readiness.ready is True
 
 
 def test_render_app_renders_ai_panel_after_current_chat_processing(monkeypatch) -> None:

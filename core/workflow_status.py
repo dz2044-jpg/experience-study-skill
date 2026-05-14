@@ -46,7 +46,7 @@ class AIWorkflowSnapshot:
     """Cheap mirror of AI panel readiness and stored-response freshness."""
 
     ready: bool = False
-    readiness_checks: Mapping[str, bool] = field(default_factory=dict)
+    readiness_checks: Mapping[str, bool | None] = field(default_factory=dict)
     has_response: bool = False
     response_is_fresh: bool | None = None
     freshness_mismatches: tuple[str, ...] = ()
@@ -456,7 +456,7 @@ def _ai_step(ai_snapshot: AIWorkflowSnapshot | None) -> WorkflowStep:
         missing_checks = [
             check_name.replace("_", " ")
             for check_name, is_ready in snapshot.readiness_checks.items()
-            if not is_ready
+            if is_ready is False
         ]
         missing_detail = (
             "Missing: " + ", ".join(missing_checks)

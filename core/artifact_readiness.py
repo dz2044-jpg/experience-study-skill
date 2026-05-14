@@ -32,7 +32,7 @@ class PathState:
 class AIArtifactReadiness:
     """Readiness facts required to build and interpret the latest AI packet."""
 
-    checks: dict[str, bool]
+    checks: dict[str, bool | None]
     sweep_path: Path | None = None
     artifact_manifest_path: Path | None = None
     state_fingerprint: str | None = None
@@ -41,7 +41,7 @@ class AIArtifactReadiness:
 
     @property
     def ready(self) -> bool:
-        return all(self.checks.values())
+        return all(check is not False for check in self.checks.values())
 
     @property
     def sweep_hash_matches_file(self) -> bool | None:
@@ -239,11 +239,14 @@ def get_ai_artifact_readiness(
             sweep_path,
             artifact_type="sweep_summary",
         )
-    sweep_hash_matches_file = bool(
-        include_file_hash
-        and sweep_content_hash
-        and actual_sweep_content_hash
-        and sweep_content_hash == actual_sweep_content_hash
+    sweep_hash_matches_file = (
+        bool(
+            sweep_content_hash
+            and actual_sweep_content_hash
+            and sweep_content_hash == actual_sweep_content_hash
+        )
+        if include_file_hash
+        else None
     )
 
     return AIArtifactReadiness(

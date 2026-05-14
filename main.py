@@ -6,7 +6,6 @@ import logging
 import math
 from pathlib import Path
 from typing import Any, Iterable
-import webbrowser
 
 from core.artifact_readiness import (
     AIArtifactReadiness,
@@ -137,14 +136,8 @@ def _render_visualization_card(visualization_path: str | None, widget_key_prefix
     with st.container(border=True):
         st.markdown("##### Generated Visualization Artifact")
         st.caption(f"`{resolved_path.name}`")
-        col1, col2, col3 = st.columns([1, 1, 3])
+        col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button(
-                "Open in Browser",
-                key=f"{widget_key_prefix}-open-visualization",
-            ):
-                webbrowser.open(resolved_path.as_uri())
-        with col2:
             st.download_button(
                 "Download HTML",
                 data=html_bytes,
@@ -152,8 +145,8 @@ def _render_visualization_card(visualization_path: str | None, widget_key_prefix
                 mime="text/html",
                 key=f"{widget_key_prefix}-download-visualization",
             )
-        with col3:
-            st.caption("Open or download the standalone report, or preview it inline below.")
+        with col2:
+            st.caption("Download the standalone report, or preview it inline below.")
         with st.expander("Preview Visualization Inline", expanded=False):
             st.components.v1.html(
                 resolved_path.read_text(encoding="utf-8"),
@@ -256,7 +249,7 @@ def _build_ai_packet_for_panel(readiness: _AIArtifactReadiness) -> AISweepPacket
         missing = [
             _AI_READINESS_LABELS.get(check_name, check_name)
             for check_name, is_ready in readiness.checks.items()
-            if not is_ready
+            if is_ready is False
         ]
         detail = ", ".join(missing) if missing else "unknown prerequisite"
         raise ValueError(f"AI interpretation prerequisites are not ready: {detail}.")
@@ -424,8 +417,11 @@ def _render_ai_status(
     status_columns = st.columns(len(readiness_items))
     for column, (check_name, label) in zip(status_columns, readiness_items):
         with column:
-            if readiness.checks.get(check_name, False):
+            check_value = readiness.checks.get(check_name, False)
+            if check_value is True:
                 st.success(label)
+            elif check_value is None:
+                st.info(f"{label} not run")
             else:
                 st.error(label)
 
@@ -647,7 +643,7 @@ def _build_ai_workflow_snapshot(copilot: UnifiedCopilot) -> AIWorkflowSnapshot:
         missing = [
             _AI_READINESS_LABELS.get(check_name, check_name)
             for check_name, is_ready in readiness.checks.items()
-            if not is_ready
+            if is_ready is False
         ]
         detail = "Missing: " + ", ".join(missing) if missing else "AI panel is not ready."
 
