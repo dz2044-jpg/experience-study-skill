@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
-from pathlib import Path
+from importlib.resources import files
 import re
 from typing import Any, Callable
 
@@ -13,6 +13,7 @@ import yaml
 
 ToolSpecFactory = Callable[[set[str] | None], list[dict[str, Any]]]
 ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
+ToolInputModels = dict[str, type[Any]]
 
 
 @dataclass(slots=True)
@@ -24,6 +25,7 @@ class LoadedSkill:
     version: str
     instructions: str
     tool_spec_factory: ToolSpecFactory
+    tool_input_models: ToolInputModels
     tool_handlers: dict[str, ToolHandler]
     tool_context_type: type[Any]
 
@@ -54,20 +56,24 @@ def load_skill(skill_name: str) -> LoadedSkill:
     """Load a skill's markdown metadata, schemas, and native tools."""
     public_name, package_name = _normalize_skill_identifiers(skill_name)
     skill_package = f"skills.{package_name}"
-    skill_path = Path("skills") / package_name / "skill.md"
-    if not skill_path.exists():
+    skill_resource = files(skill_package).joinpath("skill.md")
+    try:
+        skill_markdown = skill_resource.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"Skill markdown not found for '{skill_name}': {skill_path}"
-        )
+            f"Skill markdown not found for '{skill_name}': {skill_package}/skill.md"
+        ) from exc
 
-    metadata, instructions = _parse_skill_markdown(
-        skill_path.read_text(encoding="utf-8")
-    )
+    metadata, instructions = _parse_skill_markdown(skill_markdown)
     schemas_module = importlib.import_module(f"{skill_package}.schemas")
     native_tools_module = importlib.import_module(f"{skill_package}.native_tools")
 
     if not hasattr(schemas_module, "get_tool_specs"):
         raise AttributeError(f"{skill_package}.schemas must define get_tool_specs().")
+    if not hasattr(schemas_module, "get_tool_input_models"):
+        raise AttributeError(
+            f"{skill_package}.schemas must define get_tool_input_models()."
+        )
     if not hasattr(native_tools_module, "get_tool_handlers"):
         raise AttributeError(
             f"{skill_package}.native_tools must define get_tool_handlers()."
@@ -83,6 +89,7 @@ def load_skill(skill_name: str) -> LoadedSkill:
         version=str(metadata.get("version", "0.0.0")),
         instructions=instructions,
         tool_spec_factory=schemas_module.get_tool_specs,
+        tool_input_models=schemas_module.get_tool_input_models(),
         tool_handlers=native_tools_module.get_tool_handlers(),
         tool_context_type=native_tools_module.ToolExecutionContext,
     )

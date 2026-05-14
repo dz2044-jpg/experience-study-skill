@@ -4,16 +4,39 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 from pathlib import Path
 import re
 import shutil
 from typing import Any, Iterator, Literal
 from uuid import uuid4
 
-from core.model_config import resolve_copilot_model
-from core.openai_compat import get_client, log_openai_error, openai_error_type
-from core.skill_loader import LoadedSkill, load_skill
+from pydantic import ValidationError
 
+from core.artifact_manifest import (
+    build_state_fingerprint,
+    build_state_fingerprint_payload,
+    file_sha256,
+    normalize_json_value,
+    update_manifest_fingerprint,
+    upsert_artifact_entries,
+)
+from core.fallback_planner import FallbackPlanner
+from core.model_config import resolve_copilot_model
+from core.methodology_log import MethodologyEvent, append_methodology_event
+from core.openai_compat import get_client, log_openai_error, openai_error_type
+from core.prerequisite_guard import (
+    IntentSummary,
+    enabled_tool_names,
+    guard_missing_prerequisites,
+)
+from core.response_formatter import ResponseFormatter
+from core.session_state import SessionArtifactState
+from core.skill_loader import LoadedSkill, load_skill
+from skills.experience_study_skill.ai_models import AI_SWEEP_PACKET_SCHEMA_VERSION
+
+
+LOGGER = logging.getLogger(__name__)
 
 EventType = Literal[
     "status",
@@ -34,177 +57,8 @@ class CopilotEvent:
     data: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
-class SessionArtifactState:
-    """Tracks the session-local artifact graph owned by the copilot."""
-
-    session_id: str
-    output_base_dir: Path
-    raw_input_path: Path | None = None
-    prepared_dataset_path: Path | None = None
-    prepared_dataset_ready: bool = False
-    latest_sweep_path: Path | None = None
-    latest_sweep_ready: bool = False
-    latest_sweep_paths_by_depth: dict[int, Path] = field(default_factory=dict)
-    latest_visualization_path: Path | None = None
-    latest_visualization_ready: bool = False
-
-    @property
-    def output_dir(self) -> Path:
-        return self.output_base_dir / self.session_id
-
-    def refresh(self) -> None:
-        self.prepared_dataset_ready = bool(
-            self.prepared_dataset_path and self.prepared_dataset_path.exists()
-        )
-        self.latest_sweep_ready = bool(self.latest_sweep_path and self.latest_sweep_path.exists())
-        self.latest_visualization_ready = bool(
-            self.latest_visualization_path and self.latest_visualization_path.exists()
-        )
-        self.latest_sweep_paths_by_depth = {
-            depth: path
-            for depth, path in self.latest_sweep_paths_by_depth.items()
-            if path.exists()
-        }
-
-    def apply_tool_result(self, result: dict[str, Any]) -> bool:
-        artifacts = result.get("artifacts", {})
-        changed = False
-
-        raw_input_path = artifacts.get("raw_input_path")
-        if raw_input_path:
-            self.raw_input_path = Path(raw_input_path)
-            changed = True
-
-        prepared_dataset_path = artifacts.get("prepared_dataset_path")
-        if prepared_dataset_path:
-            self.prepared_dataset_path = Path(prepared_dataset_path)
-            changed = True
-
-        sweep_summary_path = artifacts.get("sweep_summary_path")
-        if sweep_summary_path:
-            self.latest_sweep_path = Path(sweep_summary_path)
-            changed = True
-
-        sweep_depth = artifacts.get("sweep_depth")
-        sweep_depth_path = artifacts.get("sweep_depth_path")
-        if sweep_depth is not None and sweep_depth_path:
-            self.latest_sweep_paths_by_depth[int(sweep_depth)] = Path(sweep_depth_path)
-            changed = True
-
-        visualization_path = artifacts.get("visualization_path")
-        if visualization_path:
-            self.latest_visualization_path = Path(visualization_path)
-            changed = True
-
-        if changed:
-            self.refresh()
-        return changed
-
-    def to_prompt(self) -> str:
-        self.refresh()
-        available_depths = sorted(self.latest_sweep_paths_by_depth)
-        sweep_paths_by_depth = {
-            depth: str(path) for depth, path in sorted(self.latest_sweep_paths_by_depth.items())
-        }
-        lines = [
-            "Current Session State:",
-            f"- session_id: {self.session_id}",
-            f"- output_dir: {self.output_dir}",
-            f"- raw_input_path: {self.raw_input_path or 'None'}",
-            f"- prepared_dataset_ready: {self.prepared_dataset_ready}",
-            f"- prepared_dataset_path: {self.prepared_dataset_path or 'None'}",
-            f"- latest_sweep_ready: {self.latest_sweep_ready}",
-            f"- latest_sweep_path: {self.latest_sweep_path or 'None'}",
-            f"- latest_sweep_paths_by_depth: {sweep_paths_by_depth}",
-            f"- available_sweep_depths: {available_depths}",
-            f"- latest_visualization_ready: {self.latest_visualization_ready}",
-            f"- latest_visualization_path: {self.latest_visualization_path or 'None'}",
-        ]
-        return "\n".join(lines)
-
-    def to_event_payload(self) -> dict[str, Any]:
-        self.refresh()
-        return {
-            "session_id": self.session_id,
-            "output_dir": str(self.output_dir),
-            "raw_input_path": str(self.raw_input_path) if self.raw_input_path else None,
-            "prepared_dataset_ready": self.prepared_dataset_ready,
-            "prepared_dataset_path": (
-                str(self.prepared_dataset_path) if self.prepared_dataset_path else None
-            ),
-            "latest_sweep_ready": self.latest_sweep_ready,
-            "latest_sweep_path": str(self.latest_sweep_path) if self.latest_sweep_path else None,
-            "latest_sweep_paths_by_depth": {
-                str(depth): str(path)
-                for depth, path in self.latest_sweep_paths_by_depth.items()
-            },
-            "latest_visualization_ready": self.latest_visualization_ready,
-            "latest_visualization_path": (
-                str(self.latest_visualization_path)
-                if self.latest_visualization_path
-                else None
-            ),
-        }
-
-
-@dataclass(slots=True)
-class IntentSummary:
-    """High-level intent classification used for gating and fallback routing."""
-
-    explicit_data_path: str | None
-    wants_profile: bool
-    wants_schema: bool
-    wants_validate: bool
-    wants_band: bool
-    wants_regroup: bool
-    wants_analysis: bool
-    wants_visualize: bool
-    wants_full_pipeline: bool
-
-    @property
-    def is_general(self) -> bool:
-        return not any(
-            (
-                self.wants_profile,
-                self.wants_schema,
-                self.wants_validate,
-                self.wants_band,
-                self.wants_regroup,
-                self.wants_analysis,
-                self.wants_visualize,
-                self.wants_full_pipeline,
-            )
-        )
-
-
 class UnifiedCopilot:
     """Single-agent copilot backed by a self-contained skill package."""
-
-    _MAX_SWEEP_TOP_N = 20
-    _PATH_RE = re.compile(r"((?:/|[A-Za-z]:[\\/])?[\w./\\-]+\.(?:csv|parquet|xlsx))")
-    _THINKING_BLOCK_RE = re.compile(r"<thinking>.*?</thinking>", re.IGNORECASE | re.DOTALL)
-    _FILTER_PATTERNS = (
-        r"\bwhere\s+(.+?)(?:,?\s+then\b|,?\s+rank\b|,?\s+sort\b|,?\s+using\b|[?.]|$)",
-        r"\bonly\s+for\s+(.+?)(?:,?\s+then\b|,?\s+rank\b|,?\s+sort\b|,?\s+using\b|[?.]|$)",
-        r"\bwith\s+(.+?)(?:,?\s+then\b|,?\s+rank\b|,?\s+sort\b|,?\s+using\b|[?.]|$)",
-    )
-    _TEXT_OPERATOR_MAP = {
-        "greater than or equal to": ">=",
-        "less than or equal to": "<=",
-        "not equal to": "!=",
-        "equal to": "=",
-        "greater than": ">",
-        "less than": "<",
-        "at least": ">=",
-        "at most": "<=",
-        "equals": "=",
-        "over": ">",
-        "under": "<",
-        "is not": "!=",
-        "is": "=",
-        "not": "!=",
-    }
 
     def __init__(
         self,
@@ -222,6 +76,8 @@ class UnifiedCopilot:
             session_id=session_id or self.new_session_id(),
             output_base_dir=Path(output_base_dir),
         )
+        self.fallback_planner = FallbackPlanner(self.state)
+        self.response_formatter = ResponseFormatter(self.state)
         self.state.output_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
@@ -236,6 +92,8 @@ class UnifiedCopilot:
             session_id=self.new_session_id(),
             output_base_dir=self.state.output_base_dir,
         )
+        self.fallback_planner = FallbackPlanner(self.state)
+        self.response_formatter = ResponseFormatter(self.state)
         self.state.output_dir.mkdir(parents=True, exist_ok=True)
         return self.state.session_id
 
@@ -254,42 +112,14 @@ class UnifiedCopilot:
         for chunk in re.findall(r"\S+\s*", text):
             yield CopilotEvent("text_delta", message=chunk)
 
+    # Compatibility shims retained for tests and likely legacy callers. New
+    # runtime code should use the extracted planner/formatter modules directly.
     @classmethod
     def _sanitize_user_facing_text(cls, text: str) -> str:
-        if not text:
-            return ""
-        sanitized = cls._THINKING_BLOCK_RE.sub("", text)
-        sanitized = re.sub(r"[ \t]+\n", "\n", sanitized)
-        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
-        return sanitized.strip()
-
-    def _finalize_response(
-        self,
-        user_input: str,
-        text: str,
-        *,
-        fallback_text: str = "",
-    ) -> Iterator[CopilotEvent]:
-        final_text = self._sanitize_user_facing_text(text)
-        if not final_text and fallback_text:
-            final_text = self._sanitize_user_facing_text(fallback_text)
-        self.history.append({"role": "user", "content": user_input})
-        self.history.append({"role": "assistant", "content": final_text})
-        yield from self._stream_text(final_text)
-        yield CopilotEvent(
-            "final",
-            message=final_text,
-            data={"artifact_state": self.state.to_event_payload()},
-        )
-
-    def _extract_data_path(self, user_input: str) -> str | None:
-        match = self._PATH_RE.search(user_input)
-        if not match:
-            return None
-        return match.group(1).replace("\\", "/")
+        return ResponseFormatter.sanitize_user_facing_text(text)
 
     def _summarize_intent(self, user_input: str) -> IntentSummary:
-        lowered = self._PATH_RE.sub(" ", user_input).lower()
+        lowered = self.fallback_planner._PATH_RE.sub(" ", user_input).lower()
         wants_profile = "profile" in lowered
         wants_schema = any(
             token in lowered for token in ("columns", "schema", "data types", "dtype", "dtypes")
@@ -321,7 +151,7 @@ class UnifiedCopilot:
             for flag in (wants_profile, wants_band, wants_analysis, wants_visualize)
         ) >= 3
         return IntentSummary(
-            explicit_data_path=self._extract_data_path(user_input),
+            explicit_data_path=self.fallback_planner._extract_data_path(user_input),
             wants_profile=wants_profile,
             wants_schema=wants_schema,
             wants_validate=wants_validate,
@@ -332,48 +162,6 @@ class UnifiedCopilot:
             wants_full_pipeline=wants_full_pipeline,
         )
 
-    def _guard_missing_prerequisites(
-        self,
-        intent: IntentSummary,
-        *,
-        current_state: SessionArtifactState | None = None,
-    ) -> str | None:
-        state = current_state or self.state
-        state.refresh()
-        has_prepared = state.prepared_dataset_ready or state.prepared_dataset_path is not None
-        has_sweep = state.latest_sweep_ready or state.latest_sweep_path is not None
-        has_dataset = (
-            intent.explicit_data_path
-            or state.prepared_dataset_ready
-            or state.prepared_dataset_path is not None
-            or state.raw_input_path is not None
-        )
-        if intent.wants_schema and not has_dataset and not (
-            intent.wants_profile or intent.wants_full_pipeline
-        ):
-            return "No dataset is available. Profile a dataset first or provide a data_path."
-        if intent.wants_visualize and not (
-            has_sweep or intent.wants_analysis or intent.wants_full_pipeline
-        ):
-            return "No sweep artifact exists for this session. Run a dimensional sweep first."
-        if intent.wants_analysis and not (
-            has_prepared
-            or intent.wants_profile
-            or intent.wants_band
-            or intent.wants_regroup
-            or intent.wants_full_pipeline
-        ):
-            return "No prepared dataset exists for this session. Profile a dataset first."
-        if (intent.wants_profile or intent.wants_full_pipeline) and not (
-            intent.explicit_data_path or state.raw_input_path
-        ):
-            return "Provide a dataset path to start the experience study workflow."
-        if (intent.wants_band or intent.wants_regroup) and not (
-            state.prepared_dataset_ready or state.raw_input_path or intent.explicit_data_path
-        ):
-            return "No dataset is available for feature engineering. Profile a dataset first or provide a data_path."
-        return None
-
     def _enabled_tool_names(
         self,
         intent: IntentSummary,
@@ -381,495 +169,551 @@ class UnifiedCopilot:
         current_state: SessionArtifactState | None = None,
     ) -> set[str]:
         state = current_state or self.state
-        state.refresh()
-        has_prepared = state.prepared_dataset_ready or state.prepared_dataset_path is not None
-        has_sweep = state.latest_sweep_ready or state.latest_sweep_path is not None
-        enabled: set[str] = set()
-
-        if intent.wants_profile or intent.wants_full_pipeline:
-            if intent.explicit_data_path or state.raw_input_path:
-                enabled.add("profile_dataset")
-        if intent.wants_schema:
-            if (
-                intent.explicit_data_path
-                or state.prepared_dataset_ready
-                or state.prepared_dataset_path
-                or state.raw_input_path
-            ):
-                enabled.add("inspect_dataset_schema")
-        if intent.wants_validate:
-            if intent.explicit_data_path or state.raw_input_path or state.prepared_dataset_ready:
-                enabled.add("run_actuarial_data_checks")
-        if intent.wants_band:
-            if intent.explicit_data_path or state.raw_input_path or state.prepared_dataset_ready:
-                enabled.add("create_categorical_bands")
-        if intent.wants_regroup:
-            if intent.explicit_data_path or state.raw_input_path or state.prepared_dataset_ready:
-                enabled.add("regroup_categorical_features")
-        if has_prepared and (intent.wants_analysis or intent.wants_full_pipeline):
-            enabled.add("run_dimensional_sweep")
-        if has_sweep and intent.wants_visualize:
-            enabled.add("generate_combined_report")
-        return enabled
-
-    def _extract_depth(self, user_input: str) -> int:
-        lowered = user_input.lower()
-        match = re.search(r"\b([123])[- ]way\b", lowered)
-        if match:
-            return int(match.group(1))
-        if "pairwise" in lowered or "all pairs" in lowered:
-            return 2
-        return 1
+        return enabled_tool_names(intent, state)
 
     def _extract_top_n(self, user_input: str) -> int:
-        match = re.search(r"\btop\s+(\d+)\b", user_input.lower())
-        requested = int(match.group(1)) if match else self._MAX_SWEEP_TOP_N
-        return max(1, min(requested, self._MAX_SWEEP_TOP_N))
+        return self.fallback_planner._extract_top_n(user_input)
 
-    def _extract_min_mac(self, user_input: str) -> int:
-        lowered = user_input.lower()
-        match = re.search(r"\bmin_mac\s*=\s*(\d+)", lowered)
-        if match:
-            return int(match.group(1))
-        match = re.search(r"\bat least\s+(\d+)\s+deaths?\b", lowered)
-        return int(match.group(1)) if match else 0
-
-    def _extract_sort_by(self, user_input: str) -> str:
-        lowered = user_input.lower()
-        explicit_match = re.search(
-            r"\b(ae_ratio_amount|ae_ratio_count|sum_mac|sum_moc|sum_mec|sum_maf|sum_mef)\b",
-            lowered,
-        )
-        if explicit_match:
-            return {
-                "ae_ratio_amount": "AE_Ratio_Amount",
-                "ae_ratio_count": "AE_Ratio_Count",
-                "sum_mac": "Sum_MAC",
-                "sum_moc": "Sum_MOC",
-                "sum_mec": "Sum_MEC",
-                "sum_maf": "Sum_MAF",
-                "sum_mef": "Sum_MEF",
-            }[explicit_match.group(1)]
-        if "count" in lowered:
-            return "AE_Ratio_Count"
-        return "AE_Ratio_Amount"
-
-    def _extract_metric(self, user_input: str) -> str:
-        return "count" if "count" in user_input.lower() else "amount"
-
-    def _extract_selected_columns(self, user_input: str) -> list[str] | None:
-        patterns = [
-            r"\bbetween\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
-            r"\bacross\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
-            r"\bon\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
-            r"\bfor\s+(.+?)(?:,?\s+then\b|,?\s+where\b|,?\s+rank\b|[?.]|$)",
-        ]
-        requested_segment: str | None = None
-        for pattern in patterns:
-            match = re.search(pattern, user_input, flags=re.IGNORECASE)
-            if match:
-                requested_segment = match.group(1)
-                break
-        if not requested_segment:
-            return None
-
-        cleaned = requested_segment.replace("×", ",").replace(" x ", ", ")
-        cleaned = re.split(
-            r",?\s+(?:and\s+)?(?:generate|create|show|visuali[sz]e|report)\b",
-            cleaned,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0]
-        cleaned = re.sub(r"\b(all pairs|pairwise|the latest sweep|latest sweep summary|the sweep)\b", "", cleaned, flags=re.IGNORECASE)
-        tokens = [
-            token.strip(" `.")
-            for token in re.split(r",|\band\b|&", cleaned, flags=re.IGNORECASE)
-            if token.strip(" `.")
-        ]
-        selected_columns: list[str] = []
-        for token in tokens:
-            if token.lower() in {"all", "all eligible dimensions", "all dimensions"}:
-                return None
-            normalized = re.sub(r"[^A-Za-z0-9]+", "_", token).strip("_")
-            if normalized and normalized not in selected_columns:
-                selected_columns.append(normalized)
-        return selected_columns or None
-
-    def _parse_scalar_value(self, value: str) -> str | int | float:
-        cleaned = value.strip().strip("`")
-        if (cleaned.startswith("'") and cleaned.endswith("'")) or (
-            cleaned.startswith('"') and cleaned.endswith('"')
-        ):
-            cleaned = cleaned[1:-1]
-        if re.fullmatch(r"-?\d+", cleaned):
-            return int(cleaned)
-        if re.fullmatch(r"-?\d+\.\d+", cleaned):
-            return float(cleaned)
-        return cleaned
-
-    def _parse_filter_clause(self, clause: str) -> dict[str, Any] | None:
-        symbolic_match = re.match(
-            r"^(?P<column>.+?)\s*(?P<operator>>=|<=|!=|=|>|<)\s*(?P<value>.+)$",
-            clause.strip(" ."),
-        )
-        if symbolic_match:
-            return {
-                "column": re.sub(
-                    r"^(?:the\s+column\s+|column\s+)",
-                    "",
-                    symbolic_match.group("column").strip(),
-                    flags=re.IGNORECASE,
-                ),
-                "operator": symbolic_match.group("operator"),
-                "value": self._parse_scalar_value(symbolic_match.group("value")),
-            }
-
-        for text_operator, symbol in sorted(
-            self._TEXT_OPERATOR_MAP.items(),
-            key=lambda item: len(item[0]),
-            reverse=True,
-        ):
-            pattern = rf"^(?P<column>.+?)\s+{re.escape(text_operator)}\s+(?P<value>.+)$"
-            match = re.match(pattern, clause.strip(" ."), flags=re.IGNORECASE)
-            if match:
-                return {
-                    "column": re.sub(
-                        r"^(?:the\s+column\s+|column\s+)",
-                        "",
-                        match.group("column").strip(),
-                        flags=re.IGNORECASE,
-                    ),
-                    "operator": symbol,
-                    "value": self._parse_scalar_value(match.group("value")),
-                }
-        return None
-
-    def _extract_filters(self, user_input: str) -> list[dict[str, Any]]:
-        lowered = user_input.lower()
-        if re.search(r"\bat least\s+\d+\s+deaths?\b", lowered):
-            scrubbed_input = re.sub(
-                r"\bwith\s+at least\s+\d+\s+deaths?\b",
-                "",
-                user_input,
-                flags=re.IGNORECASE,
-            )
-        else:
-            scrubbed_input = user_input
-
-        for pattern in self._FILTER_PATTERNS:
-            match = re.search(pattern, scrubbed_input, flags=re.IGNORECASE)
-            if not match:
-                continue
-            segment = match.group(1).strip()
-            clauses = [
-                clause.strip(" ,.")
-                for clause in re.split(r"\band\b", segment, flags=re.IGNORECASE)
-                if clause.strip(" ,.")
-            ]
-            parsed: list[dict[str, Any]] = []
-            for clause in clauses:
-                parsed_clause = self._parse_filter_clause(clause)
-                if not parsed_clause:
-                    return []
-                parsed.append(parsed_clause)
-            return parsed
-        return []
-
-    def _extract_band_args(self, user_input: str, intent: IntentSummary) -> dict[str, Any] | None:
-        patterns = [
-            r"group\s+(?P<column>[A-Za-z_][A-Za-z0-9_ ]*)\s+into\s+(?P<bins>\d+)\s+(?P<strategy>equal[-\s]+width|quantiles?|equal[-\s]+quantile|same[-\s]+quantile)\s+bands?",
-            r"create\s+(?P<bins>\d+)\s+(?P<strategy>equal[-\s]+width|quantiles?|equal[-\s]+quantile|same[-\s]+quantile)\s+bands?\s+(?:for|on)\s+(?P<column>[A-Za-z_][A-Za-z0-9_ ]*)",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, user_input, flags=re.IGNORECASE)
-            if not match:
-                continue
-            strategy_text = re.sub(r"[-\s]+", " ", match.group("strategy").strip().lower())
-            strategy = "quantiles" if "quantile" in strategy_text else "equal_width"
-            return {
-                "source_column": re.sub(
-                    r"[^A-Za-z0-9]+",
-                    "_",
-                    match.group("column").strip(),
-                ).strip("_"),
-                "strategy": strategy,
-                "bins": int(match.group("bins")),
-            }
-        return None
-
-    def _extract_regroup_args(self, user_input: str, intent: IntentSummary) -> dict[str, Any] | None:
-        column_match = re.search(
-            r"regroup.*?(?:for|on)\s+(?P<column>[A-Za-z_][A-Za-z0-9_ ]*)",
-            user_input,
-            flags=re.IGNORECASE,
-        )
-        mapping_match = re.search(r"(\{.*\})", user_input)
-        if not column_match or not mapping_match:
-            return None
-        try:
-            mapping_dict = json.loads(mapping_match.group(1))
-        except json.JSONDecodeError:
-            return None
-        return {
-            "source_column": re.sub(
-                r"[^A-Za-z0-9]+", "_", column_match.group("column").strip()
-            ).strip("_"),
-            "mapping_dict": mapping_dict,
-        }
-
-    def _extract_sweep_args(self, user_input: str) -> dict[str, Any]:
-        return {
-            "depth": self._extract_depth(user_input),
-            "min_mac": self._extract_min_mac(user_input),
-            "top_n": self._extract_top_n(user_input),
-            "sort_by": self._extract_sort_by(user_input),
-            "filters": self._extract_filters(user_input),
-            "selected_columns": self._extract_selected_columns(user_input),
-        }
-
-    def _extract_visualization_args(self, user_input: str) -> dict[str, Any]:
-        explicit_csv = self._extract_data_path(user_input)
-        data_path = (
-            explicit_csv
-            if explicit_csv
-            and explicit_csv.endswith(".csv")
-            and "sweep_summary" in Path(explicit_csv).name
-            else None
-        )
-        return {"metric": self._extract_metric(user_input), "data_path": data_path}
-
-    def _extract_schema_args(self, intent: IntentSummary) -> dict[str, Any]:
-        if intent.wants_profile or intent.wants_full_pipeline:
-            return {"data_path": None}
-        return {"data_path": intent.explicit_data_path}
-
-    def _build_fallback_plan(
+    def _finalize_response(
         self,
         user_input: str,
-        intent: IntentSummary,
-    ) -> tuple[list[tuple[str, dict[str, Any]]], str | None]:
-        guidance = self._guard_missing_prerequisites(intent)
-        if guidance:
-            return ([], guidance)
-
-        plan: list[tuple[str, dict[str, Any]]] = []
-        profile_path = intent.explicit_data_path or (
-            str(self.state.raw_input_path) if self.state.raw_input_path else None
+        text: str,
+        *,
+        fallback_text: str = "",
+    ) -> Iterator[CopilotEvent]:
+        final_text = self._sanitize_user_facing_text(text)
+        if not final_text and fallback_text:
+            final_text = self._sanitize_user_facing_text(fallback_text)
+        self.history.append({"role": "user", "content": user_input})
+        self.history.append({"role": "assistant", "content": final_text})
+        yield from self._stream_text(final_text)
+        yield CopilotEvent(
+            "final",
+            message=final_text,
+            data={"artifact_state": self.state.to_event_payload()},
         )
-
-        if (intent.wants_profile or intent.wants_full_pipeline) and profile_path:
-            plan.append(("profile_dataset", {"data_path": profile_path}))
-
-        if intent.wants_schema:
-            plan.append(("inspect_dataset_schema", self._extract_schema_args(intent)))
-
-        if intent.wants_validate:
-            plan.append(("run_actuarial_data_checks", {"data_path": intent.explicit_data_path}))
-
-        if intent.wants_band:
-            band_args = self._extract_band_args(user_input, intent)
-            if band_args is None:
-                return ([], "Specify the column, number of bins, and strategy for banding.")
-            plan.append(("create_categorical_bands", band_args))
-
-        if intent.wants_regroup:
-            regroup_args = self._extract_regroup_args(user_input, intent)
-            if regroup_args is None:
-                return (
-                    [],
-                    "Specify the source column and a valid JSON mapping dictionary for regrouping.",
-                )
-            plan.append(("regroup_categorical_features", regroup_args))
-
-        if intent.wants_analysis or intent.wants_full_pipeline:
-            plan.append(("run_dimensional_sweep", self._extract_sweep_args(user_input)))
-
-        if intent.wants_visualize:
-            plan.append(("generate_combined_report", self._extract_visualization_args(user_input)))
-
-        if not plan:
-            return (
-                [],
-                "I can inspect dataset schemas, profile a dataset, validate it, engineer features, run dimensional sweeps, or generate the combined report.",
-            )
-        return (plan, None)
-
-    def _format_schema_result(self, result: dict[str, Any]) -> str:
-        data = result.get("data", {})
-        source_path = data.get("source_path", "the dataset")
-        columns = data.get("columns", [])
-        data_types = data.get("data_types", {})
-        if not columns:
-            return result["message"]
-        lines = [f"Columns in `{source_path}` ({len(columns)}):"]
-        lines.extend(
-            f"- `{column}`: `{data_types.get(column, 'unknown')}`" for column in columns
-        )
-        return "\n".join(lines)
-
-    def _format_profile_result(self, result: dict[str, Any]) -> str:
-        data = result.get("data", {})
-        artifacts = result.get("artifacts", {})
-        source_path = artifacts.get("raw_input_path", "the source dataset")
-        prepared_path = artifacts.get("prepared_dataset_path", "the prepared dataset")
-        row_count = data.get("total_rows")
-        column_count = len(data.get("columns", []))
-        unique_policies = data.get("unique_policy_count")
-        summary_bits = []
-        if row_count is not None:
-            summary_bits.append(f"{int(row_count):,} rows")
-        if column_count:
-            summary_bits.append(f"{column_count} columns")
-        if unique_policies is not None:
-            summary_bits.append(f"{int(unique_policies):,} unique policies")
-        lines = [f"Created the prepared dataset `{prepared_path}` from `{source_path}`."]
-        if summary_bits:
-            lines.append(f"Profile summary: {', '.join(summary_bits)}.")
-        return "\n".join(lines)
 
     @staticmethod
-    def _format_sweep_value(value: Any) -> str:
-        try:
-            return f"{float(value):.2f}"
-        except (TypeError, ValueError):
-            return str(value)
+    def _audit_path_snapshot(path: str | Path | None) -> dict[str, str] | None:
+        if not path:
+            return None
+        source_path = Path(path)
+        if not source_path.exists() or not source_path.is_file():
+            return None
+        return {"path": str(source_path), "content_hash": file_sha256(source_path)}
 
-    def _analysis_summary_table(self, rows: list[dict[str, Any]]) -> str:
-        headers = [
-            "Cohort Dimension",
-            "Actual Deaths (MAC)",
-            "Expected (MEC)",
-            "A/E Ratio (Count)",
-            "A/E Ratio (Amount)",
+    def _capture_audit_source_snapshot(self, args: dict[str, Any]) -> dict[str, dict[str, str]]:
+        candidates: list[tuple[str, str | Path | None]] = [
+            ("raw_input_path", self.state.raw_input_path),
+            ("prepared_dataset_path", self.state.prepared_dataset_path),
+            ("latest_sweep_path", self.state.latest_sweep_path),
         ]
-        lines = [
-            "| " + " | ".join(headers) + " |",
-            "| --- | ---: | ---: | ---: | ---: |",
-        ]
-        for row in rows:
-            values = [
-                str(row.get("Dimensions", "")),
-                self._format_sweep_value(row.get("Sum_MAC")),
-                self._format_sweep_value(row.get("Sum_MEC")),
-                self._format_sweep_value(row.get("AE_Ratio_Count")),
-                self._format_sweep_value(row.get("AE_Ratio_Amount")),
-            ]
-            lines.append("| " + " | ".join(values) + " |")
-        return "\n".join(lines)
-
-    def _analysis_summary_sections(
-        self,
-        result: dict[str, Any],
-        *,
-        include_intro: bool,
-    ) -> list[str]:
-        lines: list[str] = []
-        if include_intro:
-            lines.append(result["message"])
-
-        rows = result.get("data", {}).get("results", [])
-        if not rows:
-            return lines
-
-        if lines:
-            lines.append("")
-        lines.extend(
-            [
-                "Summary of Sweep Results",
-                "",
-                self._analysis_summary_table(rows),
-                "",
-                "Credibility interval detail is available in the chat explorer and generated report.",
-            ]
+        explicit_data_path = args.get("data_path")
+        if explicit_data_path:
+            candidates.insert(0, ("explicit_data_path", explicit_data_path))
+        candidates.extend(
+            (f"latest_sweep_depth_{depth}", path)
+            for depth, path in sorted(self.state.latest_sweep_paths_by_depth.items())
         )
-        return lines
 
-    def _format_analysis_result(self, result: dict[str, Any]) -> str:
-        return "\n".join(self._analysis_summary_sections(result, include_intro=True))
+        snapshot: dict[str, dict[str, str]] = {}
+        for name, path in candidates:
+            try:
+                source_snapshot = self._audit_path_snapshot(path)
+            except OSError:
+                continue
+            if source_snapshot:
+                snapshot[name] = source_snapshot
+        return snapshot
 
-    def _format_compact_result(self, result: dict[str, Any]) -> str:
-        kind = result.get("kind")
-        data = result.get("data", {})
+    @staticmethod
+    def _source_artifact(
+        artifact_type: str,
+        source: dict[str, str] | None,
+    ) -> list[dict[str, str]]:
+        if not source:
+            return []
+        return [
+            {
+                "artifact_type": artifact_type,
+                "path": source["path"],
+                "content_hash": source["content_hash"],
+            }
+        ]
+
+    @staticmethod
+    def _source_artifact_from_path(
+        artifact_type: str,
+        path: str | Path | None,
+    ) -> list[dict[str, str]]:
+        source = UnifiedCopilot._audit_path_snapshot(path)
+        return UnifiedCopilot._source_artifact(artifact_type, source)
+
+    @staticmethod
+    def _first_snapshot(
+        pre_call_sources: dict[str, dict[str, str]],
+        *names: str,
+    ) -> dict[str, str] | None:
+        for name in names:
+            source = pre_call_sources.get(name)
+            if source:
+                return source
+        return None
+
+    def _audit_parameters(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        if tool_name == "run_dimensional_sweep":
+            return normalize_json_value(
+                {
+                    "depth": args.get("depth", 1),
+                    "filters": args.get("filters", []),
+                    "selected_columns": args.get("selected_columns"),
+                    "min_mac": args.get("min_mac", 0),
+                    "top_n": args.get("top_n", FallbackPlanner._MAX_SWEEP_TOP_N),
+                    "sort_by": args.get("sort_by", "AE_Ratio_Amount"),
+                }
+            )
+        parameters = dict(args)
+        if tool_name in {"create_categorical_bands", "regroup_categorical_features"}:
+            data = result.get("data", {})
+            for key in ("new_column", "bins", "mapping_applied"):
+                if key in data:
+                    parameters[key] = data[key]
+        if tool_name == "run_actuarial_data_checks":
+            data = result.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            issues = data.get("issues", [])
+            parameters["status"] = data.get("status")
+            parameters["issue_count"] = len(issues) if isinstance(issues, list) else 0
+        if tool_name == "generate_combined_report":
+            parameters.setdefault("metric", "amount")
+        return normalize_json_value(parameters)
+
+    def _methodology_event_for_result(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+        pre_call_sources: dict[str, dict[str, str]],
+    ) -> MethodologyEvent:
         artifacts = result.get("artifacts", {})
-        if kind == "profile":
-            prepared_path = artifacts.get("prepared_dataset_path", "the prepared dataset")
-            return f"Profiled the source dataset and saved `{prepared_path}`."
-        if kind == "schema":
-            source_path = data.get("source_path", "the dataset")
-            column_count = data.get("column_count")
-            if column_count is None:
-                return f"Inspected the schema for `{source_path}`."
-            return f"Inspected the schema for `{source_path}` ({int(column_count)} columns)."
-        if kind == "validation":
-            return result["message"]
-        if kind == "feature_engineering":
-            return result["message"]
-        if kind == "analysis":
-            return result["message"]
-        if kind == "visualization":
-            return result["message"]
-        return result["message"]
-
-    def _next_steps(self) -> list[str]:
-        next_steps: list[str] = []
-        if self.state.prepared_dataset_ready and not self.state.latest_sweep_ready:
-            next_steps.append("Run a dimensional sweep when you are ready for A/E analysis.")
-        if self.state.latest_sweep_ready and not self.state.latest_visualization_ready:
-            next_steps.append("Generate the combined report to visualize the latest sweep.")
-        return next_steps
-
-    def _summarize_tool_results(self, results: list[dict[str, Any]]) -> str:
-        if not results:
-            return "No deterministic work was executed."
-
-        if len(results) == 1:
-            result = results[0]
-            if result.get("kind") == "schema":
-                lines = [self._format_schema_result(result)]
-            elif result.get("kind") == "profile":
-                lines = [self._format_profile_result(result)]
-            elif result.get("kind") == "analysis":
-                lines = [self._format_analysis_result(result)]
-            else:
-                lines = [self._format_compact_result(result)]
+        data = result.get("data", {})
+        step_name_by_tool = {
+            "profile_dataset": "Source dataset profiled",
+            "inspect_dataset_schema": "Schema inspected",
+            "run_actuarial_data_checks": "Validation checks run",
+            "create_categorical_bands": "Categorical bands created",
+            "regroup_categorical_features": "Categorical regrouping applied",
+            "run_dimensional_sweep": "Dimensional sweep run",
+            "generate_combined_report": "Visualization generated",
+        }
+        if (
+            tool_name == "create_categorical_bands"
+            and args.get("source_column") in {"Age", "Issue_Age"}
+        ):
+            step_name = "Age bands created"
         else:
-            lines = ["Completed deterministic steps:"]
-            lines.extend(f"- {self._format_compact_result(result)}" for result in results)
-            schema_results = [result for result in results if result.get("kind") == "schema"]
-            if schema_results:
-                lines.append("")
-                lines.append(self._format_schema_result(schema_results[-1]))
-            analysis_results = [result for result in results if result.get("kind") == "analysis"]
-            if analysis_results:
-                lines.append("")
-                lines.extend(
-                    self._analysis_summary_sections(
-                        analysis_results[-1],
-                        include_intro=False,
-                    )
+            step_name = step_name_by_tool.get(tool_name, tool_name)
+
+        input_path = None
+        output_path = None
+        if tool_name == "profile_dataset":
+            input_path = artifacts.get("raw_input_path") or args.get("data_path")
+            output_path = artifacts.get("prepared_dataset_path")
+        elif tool_name == "inspect_dataset_schema":
+            input_path = data.get("source_path") or args.get("data_path")
+        elif tool_name == "run_actuarial_data_checks":
+            source = self._first_snapshot(
+                pre_call_sources,
+                "explicit_data_path",
+                "prepared_dataset_path",
+                "raw_input_path",
+            )
+            input_path = args.get("data_path") or (source["path"] if source else None)
+        elif tool_name in {"create_categorical_bands", "regroup_categorical_features"}:
+            source = self._first_snapshot(
+                pre_call_sources,
+                "explicit_data_path",
+                "prepared_dataset_path",
+                "raw_input_path",
+            )
+            input_path = args.get("data_path") or (source["path"] if source else None)
+            output_path = artifacts.get("prepared_dataset_path")
+        elif tool_name == "run_dimensional_sweep":
+            input_path = artifacts.get("prepared_dataset_path") or args.get("data_path")
+            output_path = artifacts.get("sweep_summary_path")
+        elif tool_name == "generate_combined_report":
+            input_path = artifacts.get("sweep_summary_path") or args.get("data_path")
+            output_path = artifacts.get("visualization_path")
+
+        return MethodologyEvent(
+            step_name=step_name,
+            tool_name=tool_name,
+            input_path=input_path,
+            output_path=output_path,
+            parameters=self._audit_parameters(tool_name, args, result),
+        )
+
+    def _artifact_entries_for_result(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+        pre_call_sources: dict[str, dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        artifacts = result.get("artifacts", {})
+        parameters = self._audit_parameters(tool_name, args, result)
+        entries: list[dict[str, Any]] = []
+        if tool_name == "profile_dataset":
+            raw_path = artifacts.get("raw_input_path")
+            prepared_path = artifacts.get("prepared_dataset_path")
+            raw_source = self._source_artifact_from_path("source_dataset", raw_path)
+            if raw_path:
+                entries.append(
+                    {
+                        "artifact_type": "source_dataset",
+                        "path": raw_path,
+                        "generating_tool": tool_name,
+                        "parameters": parameters,
+                        "source_artifacts": [],
+                    }
                 )
+            if prepared_path:
+                entries.append(
+                    {
+                        "artifact_type": "prepared_dataset",
+                        "path": prepared_path,
+                        "generating_tool": tool_name,
+                        "parameters": parameters,
+                        "source_artifacts": raw_source,
+                    }
+                )
+        elif tool_name in {"create_categorical_bands", "regroup_categorical_features"}:
+            prepared_path = artifacts.get("prepared_dataset_path")
+            source = self._first_snapshot(
+                pre_call_sources,
+                "explicit_data_path",
+                "prepared_dataset_path",
+                "raw_input_path",
+            )
+            source_type = (
+                "prepared_dataset"
+                if source and source == pre_call_sources.get("prepared_dataset_path")
+                else "source_dataset"
+            )
+            if prepared_path:
+                entries.append(
+                    {
+                        "artifact_type": "prepared_dataset",
+                        "path": prepared_path,
+                        "generating_tool": tool_name,
+                        "parameters": parameters,
+                        "source_artifacts": self._source_artifact(source_type, source),
+                    }
+                )
+        elif tool_name == "run_dimensional_sweep":
+            prepared_path = artifacts.get("prepared_dataset_path") or args.get("data_path")
+            source_artifacts = self._source_artifact_from_path(
+                "prepared_dataset",
+                prepared_path,
+            )
+            sweep_specs = [
+                ("sweep_output", artifacts.get("sweep_output_path")),
+                ("sweep_summary", artifacts.get("sweep_summary_path")),
+                ("sweep_depth_summary", artifacts.get("sweep_depth_path")),
+            ]
+            for artifact_type, path in sweep_specs:
+                if path:
+                    entries.append(
+                        {
+                            "artifact_type": artifact_type,
+                            "path": path,
+                            "generating_tool": tool_name,
+                            "parameters": parameters,
+                            "source_artifacts": source_artifacts,
+                        }
+                    )
+        elif tool_name == "generate_combined_report":
+            visualization_path = artifacts.get("visualization_path")
+            sweep_path = artifacts.get("sweep_summary_path") or args.get("data_path")
+            if visualization_path:
+                entries.append(
+                    {
+                        "artifact_type": "visualization_report",
+                        "path": visualization_path,
+                        "generating_tool": tool_name,
+                        "parameters": parameters,
+                        "source_artifacts": self._source_artifact_from_path(
+                            "sweep_summary",
+                            sweep_path,
+                        ),
+                    }
+                )
+        return entries
 
-        next_steps = self._next_steps()
-        if next_steps:
-            lines.append("")
-            lines.extend(next_steps)
-        return "\n".join(lines)
+    def _sweep_state_source_hashes(self) -> dict[str, str | None]:
+        source_hashes: dict[str, str | None] = {}
+        for name, path in (
+            ("raw_input_path", self.state.raw_input_path),
+            ("prepared_dataset_path", self.state.prepared_dataset_path),
+            ("latest_sweep_path", self.state.latest_sweep_path),
+        ):
+            try:
+                source_hashes[name] = (
+                    self._audit_path_snapshot(path) or {"content_hash": None}
+                )["content_hash"]
+            except OSError:
+                source_hashes[name] = None
+        return normalize_json_value(source_hashes)
 
-    def _execute_tool_call(
+    def _record_audit_result(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        pre_call_sources: dict[str, dict[str, str]],
+        result: dict[str, Any],
+    ) -> bool:
+        methodology_log_path = self.state.default_methodology_log_path
+        artifact_manifest_path = self.state.default_artifact_manifest_path
+
+        methodology_event = self._methodology_event_for_result(
+            tool_name,
+            args,
+            result,
+            pre_call_sources,
+        )
+        append_methodology_event(methodology_log_path, methodology_event)
+        audit_files_written = True
+
+        manifest_entries = self._artifact_entries_for_result(
+            tool_name,
+            args,
+            result,
+            pre_call_sources,
+        )
+        if manifest_entries:
+            upsert_artifact_entries(artifact_manifest_path, manifest_entries)
+            audit_files_written = True
+
+        if tool_name == "run_dimensional_sweep":
+            parameters = self._audit_parameters(tool_name, args, result)
+            source_hashes = self._sweep_state_source_hashes()
+            fingerprint_inputs = build_state_fingerprint_payload(
+                source_hashes=source_hashes,
+                selected_columns=parameters.get("selected_columns"),
+                filters=parameters.get("filters"),
+                depth=parameters.get("depth"),
+                sort_by=parameters.get("sort_by"),
+                min_mac=parameters.get("min_mac"),
+                packet_schema_version=AI_SWEEP_PACKET_SCHEMA_VERSION,
+                skill_name=self.active_skill.name,
+                skill_version=self.active_skill.version,
+            )
+            fingerprint = build_state_fingerprint(
+                source_hashes=source_hashes,
+                selected_columns=parameters.get("selected_columns"),
+                filters=parameters.get("filters"),
+                depth=parameters.get("depth"),
+                sort_by=parameters.get("sort_by"),
+                min_mac=parameters.get("min_mac"),
+                packet_schema_version=AI_SWEEP_PACKET_SCHEMA_VERSION,
+                skill_name=self.active_skill.name,
+                skill_version=self.active_skill.version,
+            )
+            update_manifest_fingerprint(
+                artifact_manifest_path,
+                fingerprint=fingerprint,
+                fingerprint_inputs=fingerprint_inputs,
+            )
+            audit_files_written = True
+            state_changed = self.state.apply_audit_result(
+                methodology_log_path=methodology_log_path,
+                artifact_manifest_path=artifact_manifest_path,
+                latest_state_fingerprint=fingerprint,
+            )
+        else:
+            state_changed = self.state.apply_audit_result(
+                methodology_log_path=methodology_log_path,
+                artifact_manifest_path=artifact_manifest_path,
+            )
+        return audit_files_written or state_changed
+
+    @staticmethod
+    def _runtime_error_result(
+        kind: str,
+        message: str,
+        *,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "kind": kind,
+            "message": message,
+            "artifacts": {},
+            "data": data or {},
+        }
+
+    @staticmethod
+    def _tool_result_event(result: dict[str, Any]) -> CopilotEvent:
+        return CopilotEvent(
+            "tool_result",
+            message=str(result.get("message", "Tool execution failed.")),
+            data={"result": result},
+        )
+
+    @staticmethod
+    def _validation_error_details(exc: ValidationError) -> list[dict[str, str]]:
+        details: list[dict[str, str]] = []
+        for error in exc.errors(include_url=False):
+            loc = ".".join(str(part) for part in error.get("loc", ()))
+            details.append(
+                {
+                    "field": loc or "<root>",
+                    "message": str(error.get("msg", "Invalid value.")),
+                    "type": str(error.get("type", "value_error")),
+                }
+            )
+        return details
+
+    def _tool_start_event(self, tool_name: str, args: dict[str, Any]) -> CopilotEvent:
+        return CopilotEvent(
+            "tool_start",
+            message=f"Executing `{tool_name}`.",
+            data={"args": args},
+        )
+
+    def _parse_tool_arguments(
+        self,
+        tool_name: str,
+        raw_arguments: str | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        try:
+            parsed_args = json.loads(raw_arguments or "{}")
+        except json.JSONDecodeError as exc:
+            LOGGER.warning(
+                "Malformed JSON arguments for tool `%s`: %s",
+                tool_name,
+                exc,
+            )
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Invalid tool arguments for `{tool_name}`. The model returned malformed JSON.",
+                data={"error_type": "malformed_json"},
+            )
+        if not isinstance(parsed_args, dict):
+            LOGGER.warning(
+                "Non-object JSON arguments for tool `%s`: %s",
+                tool_name,
+                type(parsed_args).__name__,
+            )
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Invalid tool arguments for `{tool_name}`. Tool arguments must be a JSON object.",
+                data={"error_type": "arguments_not_object"},
+            )
+        return parsed_args, None
+
+    def _validate_tool_args(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        handler = self.active_skill.tool_handlers.get(tool_name)
+        input_model = self.active_skill.tool_input_models.get(tool_name)
+        if handler is None or input_model is None:
+            LOGGER.warning("Unknown deterministic tool requested: `%s`.", tool_name)
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Tool `{tool_name}` is not available.",
+                data={"error_type": "unknown_tool"},
+            )
+
+        try:
+            validated_args = input_model.model_validate(args)
+        except ValidationError as exc:
+            details = self._validation_error_details(exc)
+            detail_text = "; ".join(
+                f"{detail['field']}: {detail['message']}" for detail in details[:3]
+            )
+            if len(details) > 3:
+                detail_text += f"; plus {len(details) - 3} more issue(s)"
+            LOGGER.warning(
+                "Invalid arguments for tool `%s`: %s",
+                tool_name,
+                details,
+            )
+            return None, self._runtime_error_result(
+                "validation_error",
+                f"Invalid arguments for `{tool_name}`: {detail_text}.",
+                data={"error_type": "schema_validation", "errors": details},
+            )
+
+        return validated_args.model_dump(), None
+
+    def _complete_tool_call(
         self,
         tool_name: str,
         args: dict[str, Any],
     ) -> tuple[dict[str, Any], list[CopilotEvent]]:
+        validated_args, validation_error = self._validate_tool_args(tool_name, args)
+        if validation_error is not None:
+            return validation_error, [self._tool_result_event(validation_error)]
+
+        assert validated_args is not None
         handler = self.active_skill.tool_handlers[tool_name]
         context = self._build_tool_context()
-        result = handler(args, context)
-        events: list[CopilotEvent] = [
-            CopilotEvent("tool_start", message=f"Executing `{tool_name}`.", data={"args": args})
-        ]
+        pre_call_sources = self._capture_audit_source_snapshot(validated_args)
+        try:
+            result = handler(validated_args, context)
+        except Exception as exc:
+            LOGGER.exception("Deterministic tool `%s` failed.", tool_name)
+            result = self._runtime_error_result(
+                "runtime_error",
+                f"Tool `{tool_name}` failed during deterministic execution. Review logs for diagnostics.",
+                data={
+                    "error_type": "handler_exception",
+                    "exception_type": type(exc).__name__,
+                },
+            )
+
+        events: list[CopilotEvent] = []
         for status_message in context.status_events:
             events.append(CopilotEvent("status", message=status_message))
-        events.append(CopilotEvent("tool_result", message=result["message"], data={"result": result}))
-        if self.state.apply_tool_result(result):
+        events.append(self._tool_result_event(result))
+        if not result.get("ok", False):
+            return result, events
+
+        artifact_state_changed = self.state.apply_tool_result(result)
+        audit_state_changed = False
+        try:
+            audit_state_changed = self._record_audit_result(
+                tool_name,
+                validated_args,
+                pre_call_sources,
+                result,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning(
+                "Audit recording skipped after `%s`: %s",
+                tool_name,
+                exc,
+            )
+            self.state.refresh()
+            events.append(
+                CopilotEvent(
+                    "status",
+                    message=(
+                        "Audit recording skipped; deterministic tool result was preserved "
+                        f"({type(exc).__name__})."
+                    ),
+                )
+            )
+        if artifact_state_changed or audit_state_changed:
             events.append(
                 CopilotEvent(
                     "artifact_update",
@@ -879,15 +723,26 @@ class UnifiedCopilot:
             )
         return result, events
 
+    def _execute_tool_call(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[CopilotEvent]]:
+        events = [self._tool_start_event(tool_name, args)]
+        result, remaining_events = self._complete_tool_call(tool_name, args)
+        events.extend(remaining_events)
+        return result, events
+
     def _fallback_process(self, user_input: str, intent: IntentSummary) -> Iterator[CopilotEvent]:
-        plan, guidance = self._build_fallback_plan(user_input, intent)
+        plan, guidance = self.fallback_planner._build_fallback_plan(user_input, intent)
         if guidance:
             yield from self._finalize_response(user_input, guidance)
             return
 
         tool_results: list[dict[str, Any]] = []
         for tool_name, args in plan:
-            result, events = self._execute_tool_call(tool_name, args)
+            yield self._tool_start_event(tool_name, args)
+            result, events = self._complete_tool_call(tool_name, args)
             for event in events:
                 yield event
             tool_results.append(result)
@@ -895,12 +750,15 @@ class UnifiedCopilot:
                 yield from self._finalize_response(user_input, result["message"])
                 return
 
-        yield from self._finalize_response(user_input, self._summarize_tool_results(tool_results))
+        yield from self._finalize_response(
+            user_input,
+            self.response_formatter.summarize_tool_results(tool_results),
+        )
 
     def _llm_messages(self, user_input: str) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.active_skill.instructions},
-            {"role": "system", "content": self.state.to_prompt()},
+            {"role": "system", "content": self.state.to_llm_prompt()},
         ]
         messages.extend(self.history)
         messages.append({"role": "user", "content": user_input})
@@ -926,7 +784,7 @@ class UnifiedCopilot:
             yield from self._fallback_process(user_input, intent)
             return
 
-        guard_message = self._guard_missing_prerequisites(intent)
+        guard_message = guard_missing_prerequisites(intent, self.state)
         if guard_message:
             yield from self._finalize_response(user_input, guard_message)
             return
@@ -935,7 +793,7 @@ class UnifiedCopilot:
         tool_results: list[dict[str, Any]] = []
 
         for _ in range(6):
-            enabled_tools = self._enabled_tool_names(intent)
+            enabled_tools = enabled_tool_names(intent, self.state)
             if not enabled_tools:
                 break
             yield CopilotEvent("status", message="Requesting the next action from the model.")
@@ -961,7 +819,7 @@ class UnifiedCopilot:
             message = completion.choices[0].message
             tool_calls = message.tool_calls or []
             if not tool_calls:
-                fallback_text = self._summarize_tool_results(tool_results)
+                fallback_text = self.response_formatter.summarize_tool_results(tool_results)
                 final_text = message.content or fallback_text
                 yield from self._finalize_response(
                     user_input,
@@ -980,8 +838,17 @@ class UnifiedCopilot:
 
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
-                args = json.loads(tool_call.function.arguments or "{}")
-                result, events = self._execute_tool_call(tool_name, args)
+                args, parse_error = self._parse_tool_arguments(
+                    tool_name,
+                    tool_call.function.arguments,
+                )
+                yield self._tool_start_event(tool_name, args or {})
+                if parse_error is not None:
+                    result = parse_error
+                    events = [self._tool_result_event(result)]
+                else:
+                    assert args is not None
+                    result, events = self._complete_tool_call(tool_name, args)
                 for event in events:
                     yield event
                 tool_results.append(result)
@@ -996,4 +863,7 @@ class UnifiedCopilot:
                     yield from self._finalize_response(user_input, result["message"])
                     return
 
-        yield from self._finalize_response(user_input, self._summarize_tool_results(tool_results))
+        yield from self._finalize_response(
+            user_input,
+            self.response_formatter.summarize_tool_results(tool_results),
+        )

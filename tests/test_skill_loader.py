@@ -9,6 +9,7 @@ def test_load_skill_returns_metadata_and_registry():
     assert "deterministic" in skill.description.lower()
     assert "actuarial" in skill.description.lower()
     assert callable(skill.tool_spec_factory)
+    assert "profile_dataset" in skill.tool_input_models
     assert "profile_dataset" in skill.tool_handlers
     assert "run_dimensional_sweep" in skill.tool_handlers
 
@@ -22,6 +23,15 @@ def test_load_skill_accepts_hyphenated_and_underscored_names():
     assert hyphen_skill.description == underscore_skill.description
     assert hyphen_skill.instructions == underscore_skill.instructions
     assert hyphen_skill.tool_handlers.keys() == underscore_skill.tool_handlers.keys()
+
+
+def test_load_skill_is_independent_of_current_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    skill = load_skill("experience-study-skill")
+
+    assert skill.name == "experience-study-skill"
+    assert "profile_dataset" in skill.tool_handlers
 
 
 def test_unified_copilot_accepts_public_and_internal_skill_identifiers():

@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ProfileDatasetInput(BaseModel):
+class ToolInputModel(BaseModel):
+    """Base contract for deterministic tool arguments."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ProfileDatasetInput(ToolInputModel):
     """Profile a raw or prepared tabular dataset."""
 
     data_path: str = Field(
@@ -24,7 +30,7 @@ class ProfileDatasetInput(BaseModel):
     )
 
 
-class InspectDatasetSchemaInput(BaseModel):
+class InspectDatasetSchemaInput(ToolInputModel):
     """Inspect the ordered columns and data types for a supported tabular dataset."""
 
     data_path: str | None = Field(
@@ -42,7 +48,7 @@ class InspectDatasetSchemaInput(BaseModel):
     )
 
 
-class ActuarialDataChecksInput(BaseModel):
+class ActuarialDataChecksInput(ToolInputModel):
     """Run actuarial validation checks against a dataset."""
 
     data_path: str | None = Field(
@@ -59,7 +65,7 @@ class ActuarialDataChecksInput(BaseModel):
     )
 
 
-class CreateCategoricalBandsInput(BaseModel):
+class CreateCategoricalBandsInput(ToolInputModel):
     """Create categorical bands for a numeric source column."""
 
     source_column: str = Field(
@@ -97,7 +103,7 @@ class CreateCategoricalBandsInput(BaseModel):
     )
 
 
-class RegroupCategoricalFeaturesInput(BaseModel):
+class RegroupCategoricalFeaturesInput(ToolInputModel):
     """Regroup source categorical values into a derived feature."""
 
     source_column: str = Field(
@@ -126,7 +132,7 @@ class RegroupCategoricalFeaturesInput(BaseModel):
     )
 
 
-class FilterClauseInput(BaseModel):
+class FilterClauseInput(ToolInputModel):
     """Structured scalar filter applied before aggregation."""
 
     column: str = Field(
@@ -146,14 +152,17 @@ class FilterClauseInput(BaseModel):
     )
 
 
-class RunDimensionalSweepInput(BaseModel):
+class RunDimensionalSweepInput(ToolInputModel):
     """Run a dimensional sweep using the prepared analysis dataset."""
 
     depth: int = Field(
         default=1,
         ge=1,
         le=3,
-        description="Dimensional interaction depth to evaluate.",
+        description=(
+            "Dimensional interaction depth to evaluate. Supports 1-way, 2-way, "
+            "and 3-way sweeps when the prepared dataset has enough eligible dimensions."
+        ),
     )
     min_mac: int = Field(
         default=0,
@@ -203,7 +212,7 @@ class RunDimensionalSweepInput(BaseModel):
     )
 
 
-class GenerateVisualizationInput(BaseModel):
+class GenerateVisualizationInput(ToolInputModel):
     """Generate the combined A/E report from a sweep summary CSV."""
 
     metric: Literal["count", "amount"] = Field(
@@ -220,7 +229,7 @@ class GenerateVisualizationInput(BaseModel):
     )
 
 
-_TOOL_MODELS: dict[str, tuple[str, type[BaseModel]]] = {
+_TOOL_MODELS: dict[str, tuple[str, type[ToolInputModel]]] = {
     "profile_dataset": (
         "Profile a supported source dataset and create the session-local prepared dataset.",
         ProfileDatasetInput,
@@ -250,6 +259,12 @@ _TOOL_MODELS: dict[str, tuple[str, type[BaseModel]]] = {
         GenerateVisualizationInput,
     ),
 }
+
+
+def get_tool_input_models() -> dict[str, type[ToolInputModel]]:
+    """Return Pydantic input models keyed by public tool name."""
+
+    return {tool_name: model for tool_name, (_, model) in _TOOL_MODELS.items()}
 
 
 def get_tool_specs(enabled_tools: set[str] | None = None) -> list[dict[str, Any]]:
