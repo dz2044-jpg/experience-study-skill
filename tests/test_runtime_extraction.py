@@ -10,7 +10,7 @@ from core.copilot_agent import (
 )
 from core.fallback_planner import FallbackPlanner
 from core.openai_compat import log_openai_error
-from core.prerequisite_guard import guard_missing_prerequisites
+from core.prerequisite_guard import enabled_tool_names, guard_missing_prerequisites
 from core.response_formatter import ResponseFormatter
 import core.fallback_planner as fallback_planner
 import core.prerequisite_guard as prerequisite_guard
@@ -69,6 +69,45 @@ def test_prerequisite_guard_guidance_remains_unchanged(tmp_path: Path):
         guard_missing_prerequisites(visualize_intent, state)
         == "No sweep artifact exists for this session. Run a dimensional sweep first."
     )
+
+
+def test_prerequisite_guard_ignores_missing_recorded_artifact_paths(tmp_path: Path):
+    state = SessionArtifactState(session_id="session-a", output_base_dir=tmp_path)
+    state.prepared_dataset_path = tmp_path / "missing_prepared.parquet"
+    state.latest_sweep_path = tmp_path / "missing_sweep.csv"
+    analysis_intent = IntentSummary(
+        explicit_data_path=None,
+        wants_profile=False,
+        wants_schema=False,
+        wants_validate=False,
+        wants_band=False,
+        wants_regroup=False,
+        wants_analysis=True,
+        wants_visualize=False,
+        wants_full_pipeline=False,
+    )
+    visualize_intent = IntentSummary(
+        explicit_data_path=None,
+        wants_profile=False,
+        wants_schema=False,
+        wants_validate=False,
+        wants_band=False,
+        wants_regroup=False,
+        wants_analysis=False,
+        wants_visualize=True,
+        wants_full_pipeline=False,
+    )
+
+    assert (
+        guard_missing_prerequisites(analysis_intent, state)
+        == "No prepared dataset exists for this session. Profile a dataset first."
+    )
+    assert "run_dimensional_sweep" not in enabled_tool_names(analysis_intent, state)
+    assert (
+        guard_missing_prerequisites(visualize_intent, state)
+        == "No sweep artifact exists for this session. Run a dimensional sweep first."
+    )
+    assert "generate_combined_report" not in enabled_tool_names(visualize_intent, state)
 
 
 def test_response_formatter_preserves_expected_text_shapes(tmp_path: Path):

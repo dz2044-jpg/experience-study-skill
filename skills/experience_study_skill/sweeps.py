@@ -20,6 +20,7 @@ from skills.experience_study_skill.io import (
     _choose_dataset_path,
     _ensure_output_dir,
     _error_result,
+    _tabular_error_result,
     _tool_result,
     load_tabular_input,
 )
@@ -164,13 +165,25 @@ def run_dimensional_sweep(
 
     source_path = _choose_dataset_path(data_path, context, require_prepared=True)
     if source_path is None:
+        if data_path:
+            return _error_result("validation_error", f"File not found: {data_path}")
         return _error_result(
             "missing_prerequisite",
             "No prepared dataset exists for this session. Profile a dataset first.",
         )
 
     context.emit_status(f"Running a deterministic {depth}-way dimensional sweep.")
-    df = load_tabular_input(str(source_path))
+    try:
+        df = load_tabular_input(str(source_path))
+    except (
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+        ValueError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ) as exc:
+        return _tabular_error_result(source_path, exc)
     missing_core = [column for column in ACTUARIAL_NUMERICS if column not in df.columns]
     if missing_core:
         return _error_result(
@@ -188,7 +201,7 @@ def run_dimensional_sweep(
             f"Column `{missing_column}` was not found in the prepared dataset.",
             data={"available_columns": list(df.columns)},
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         return _error_result("validation_error", str(exc))
 
     if len(dimensions) < depth:

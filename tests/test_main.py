@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from core.artifact_manifest import file_sha256, upsert_artifact_entry
 from core.copilot_agent import CopilotEvent
@@ -229,6 +230,7 @@ def test_ai_workflow_snapshot_uses_readiness_without_building_packet(monkeypatch
                 "artifact_manifest": True,
                 "state_fingerprint": True,
                 "sweep_manifest_hash": True,
+                "sweep_hash_matches_file": True,
             },
             state_fingerprint="state-a",
             sweep_content_hash="hash-a",
@@ -250,7 +252,7 @@ def test_ai_workflow_snapshot_uses_readiness_without_building_packet(monkeypatch
     assert snapshot.ready is True
     assert snapshot.has_response is False
     assert snapshot.basis == "existing AI panel readiness"
-    assert readiness_calls == {"include_file_hash": False, "refresh_state": False}
+    assert readiness_calls == {"include_file_hash": True, "refresh_state": False}
 
 
 def test_ai_workflow_snapshot_marks_stored_response_stale_on_known_mismatch(
@@ -278,6 +280,7 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_on_known_mismatch(
                 "artifact_manifest": True,
                 "state_fingerprint": True,
                 "sweep_manifest_hash": True,
+                "sweep_hash_matches_file": True,
             },
             state_fingerprint="state-b",
             sweep_content_hash="hash-b",
@@ -329,6 +332,7 @@ def test_ai_workflow_snapshot_marks_stored_response_stale_when_sweep_state_is_cl
                 "artifact_manifest": True,
                 "state_fingerprint": False,
                 "sweep_manifest_hash": False,
+                "sweep_hash_matches_file": False,
             },
             state_fingerprint=None,
             sweep_content_hash=None,
@@ -410,6 +414,7 @@ def test_ai_workflow_snapshot_compares_packet_fingerprint_when_response_exists(
                 "artifact_manifest": True,
                 "state_fingerprint": True,
                 "sweep_manifest_hash": True,
+                "sweep_hash_matches_file": True,
             },
             state_fingerprint="state-a",
             sweep_content_hash="hash-a",
@@ -455,6 +460,7 @@ def test_ai_workflow_snapshot_handles_packet_build_failure(
                 "artifact_manifest": True,
                 "state_fingerprint": True,
                 "sweep_manifest_hash": True,
+                "sweep_hash_matches_file": True,
             },
             state_fingerprint="state-a",
             sweep_content_hash="hash-a",
@@ -587,6 +593,13 @@ def test_render_app_renders_ai_panel_without_prompt(monkeypatch) -> None:
 
     assert calls == ["empty_state", "ai_panel:False"]
     assert fake_st.session_state["history"] == []
+
+
+def test_empty_state_suggestion_uses_existing_sample_dataset() -> None:
+    suggestions = "\n".join(message for _, message in main.EMPTY_STATE_SUGGESTIONS)
+
+    assert "data/input/synthetic_inforce.csv" in suggestions
+    assert "data/input/example.csv" not in suggestions
 
 
 def test_consume_copilot_events_keeps_fallback_status_only(monkeypatch) -> None:
@@ -766,6 +779,7 @@ def test_ai_panel_readiness_reports_missing_artifacts_and_manifest_hash(tmp_path
         "artifact_manifest": False,
         "state_fingerprint": False,
         "sweep_manifest_hash": False,
+        "sweep_hash_matches_file": False,
     }
     assert empty_readiness.ready is False
 
@@ -783,6 +797,7 @@ def test_ai_panel_readiness_reports_missing_artifacts_and_manifest_hash(tmp_path
     assert missing_manifest_readiness.checks["artifact_manifest"] is False
     assert missing_manifest_readiness.checks["state_fingerprint"] is True
     assert missing_manifest_readiness.checks["sweep_manifest_hash"] is False
+    assert missing_manifest_readiness.checks["sweep_hash_matches_file"] is False
 
     manifest_path = _write_sweep_manifest(
         tmp_path / "audit" / "artifact_manifest.json",
@@ -800,9 +815,64 @@ def test_ai_panel_readiness_reports_missing_artifacts_and_manifest_hash(tmp_path
     assert ready.ready is True
     assert ready.sweep_content_hash == file_sha256(sweep_path)
     assert ready.sweep_hash_matches_file is True
+    assert ready.checks["sweep_hash_matches_file"] is True
     assert main._manifest_content_hash_for_path(manifest_path, sweep_path) == file_sha256(
         sweep_path
     )
+
+
+def test_ai_packet_build_is_blocked_when_manifest_file_hash_differs(
+    tmp_path: Path,
+) -> None:
+    sweep_path = _write_ai_sweep(tmp_path / "sweep_summary.csv")
+    manifest_path = _write_sweep_manifest(
+        tmp_path / "audit" / "artifact_manifest.json",
+        sweep_path,
+    )
+    sweep_path.write_text(sweep_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    readiness = main._get_ai_panel_readiness(
+        SimpleNamespace(
+            latest_sweep_path=sweep_path,
+            artifact_manifest_path=manifest_path,
+            latest_state_fingerprint="state-a",
+            refresh=_refresh_noop,
+        )
+    )
+
+    with pytest.raises(ValueError, match="Manifest/file hash match"):
+        main._build_ai_packet_for_panel(readiness)
+
+
+def test_ai_workflow_snapshot_blocks_on_manifest_file_hash_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sweep_path = _write_ai_sweep(tmp_path / "sweep_summary.csv")
+    manifest_path = _write_sweep_manifest(
+        tmp_path / "audit" / "artifact_manifest.json",
+        sweep_path,
+    )
+    sweep_path.write_text(sweep_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        main,
+        "st",
+        SimpleNamespace(session_state={"ai_interpretation_response": None}),
+    )
+
+    snapshot = main._build_ai_workflow_snapshot(
+        SimpleNamespace(
+            state=SimpleNamespace(
+                latest_sweep_path=sweep_path,
+                artifact_manifest_path=manifest_path,
+                latest_state_fingerprint="state-a",
+                refresh=_refresh_noop,
+            )
+        )
+    )
+
+    assert snapshot.ready is False
+    assert snapshot.readiness_checks["sweep_hash_matches_file"] is False
+    assert "Manifest/file hash match" in snapshot.detail
 
 
 def test_select_top_cohort_ignores_invalid_values_and_preserves_tie_order() -> None:
@@ -860,6 +930,7 @@ def test_ai_response_sections_render_metadata_and_stale_status() -> None:
             "artifact_manifest": True,
             "state_fingerprint": True,
             "sweep_manifest_hash": True,
+            "sweep_hash_matches_file": True,
         },
         state_fingerprint="state-a",
         sweep_content_hash="hash-a",
@@ -969,6 +1040,7 @@ def test_ai_panel_path_uses_packet_builder_and_orchestrator(monkeypatch) -> None
             "artifact_manifest": True,
             "state_fingerprint": True,
             "sweep_manifest_hash": True,
+            "sweep_hash_matches_file": True,
         },
         sweep_path=Path("sweep_summary.csv"),
         artifact_manifest_path=Path("artifact_manifest.json"),

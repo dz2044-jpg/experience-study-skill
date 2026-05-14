@@ -239,6 +239,12 @@ def get_ai_artifact_readiness(
             sweep_path,
             artifact_type="sweep_summary",
         )
+    sweep_hash_matches_file = bool(
+        include_file_hash
+        and sweep_content_hash
+        and actual_sweep_content_hash
+        and sweep_content_hash == actual_sweep_content_hash
+    )
 
     return AIArtifactReadiness(
         checks={
@@ -246,6 +252,7 @@ def get_ai_artifact_readiness(
             "artifact_manifest": artifact_manifest_ready,
             "state_fingerprint": bool(state_fingerprint),
             "sweep_manifest_hash": bool(sweep_content_hash),
+            "sweep_hash_matches_file": sweep_hash_matches_file,
         },
         sweep_path=sweep_path,
         artifact_manifest_path=manifest_path,

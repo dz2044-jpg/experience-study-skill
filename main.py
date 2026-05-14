@@ -41,7 +41,7 @@ LOGGER = logging.getLogger(__name__)
 EMPTY_STATE_SUGGESTIONS = (
     (
         "info",
-        "**Profile Data**\n\n`Profile data/input/example.csv and tell me the columns.`",
+        "**Profile Data**\n\n`Profile data/input/synthetic_inforce.csv and tell me the columns.`",
     ),
     (
         "success",
@@ -88,6 +88,7 @@ _AI_READINESS_LABELS = {
     "artifact_manifest": "Artifact manifest",
     "state_fingerprint": "State fingerprint",
     "sweep_manifest_hash": "Sweep manifest content hash",
+    "sweep_hash_matches_file": "Manifest/file hash match",
 }
 
 _WORKFLOW_STATUS_LABELS = {
@@ -251,6 +252,14 @@ def _format_ai_cohort_label(row: Any) -> str:
 
 
 def _build_ai_packet_for_panel(readiness: _AIArtifactReadiness) -> AISweepPacket:
+    if not readiness.ready:
+        missing = [
+            _AI_READINESS_LABELS.get(check_name, check_name)
+            for check_name, is_ready in readiness.checks.items()
+            if not is_ready
+        ]
+        detail = ", ".join(missing) if missing else "unknown prerequisite"
+        raise ValueError(f"AI interpretation prerequisites are not ready: {detail}.")
     if not readiness.sweep_path:
         raise ValueError("Latest sweep artifact is required for AI interpretation.")
     return build_latest_sweep_packet(
@@ -408,8 +417,12 @@ def _render_ai_status(
 ) -> None:
     _require_streamlit()
     st.caption("Artifact readiness")
-    status_columns = st.columns(4)
-    for column, (check_name, label) in zip(status_columns, _AI_READINESS_LABELS.items()):
+    readiness_items = [
+        (check_name, _AI_READINESS_LABELS.get(check_name, check_name))
+        for check_name in readiness.checks
+    ]
+    status_columns = st.columns(len(readiness_items))
+    for column, (check_name, label) in zip(status_columns, readiness_items):
         with column:
             if readiness.checks.get(check_name, False):
                 st.success(label)
@@ -584,7 +597,7 @@ def _build_ai_workflow_snapshot(copilot: UnifiedCopilot) -> AIWorkflowSnapshot:
     try:
         readiness = _get_ai_panel_readiness(
             copilot.state,
-            include_file_hash=False,
+            include_file_hash=True,
             refresh_state=False,
         )
     except (OSError, ValueError) as exc:

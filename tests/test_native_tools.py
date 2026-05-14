@@ -10,6 +10,8 @@ from skills.experience_study_skill.native_tools import (
     compute_ae_ci,
     compute_ae_ci_amount,
     generate_combined_report,
+    inspect_dataset_schema,
+    profile_dataset,
     run_actuarial_data_checks,
     run_dimensional_sweep,
 )
@@ -101,6 +103,100 @@ def test_visualization_tool_enforces_prerequisite(tmp_path: Path):
     assert result["ok"] is False
     assert result["kind"] == "missing_prerequisite"
     assert "Run dimensional sweep first" in result["message"]
+
+
+def test_explicit_missing_analysis_file_returns_validation_error(tmp_path: Path):
+    context = ToolExecutionContext(
+        session_id="session-a",
+        output_dir=tmp_path / "sessions" / "session-a",
+    )
+
+    result = run_dimensional_sweep(
+        context=context,
+        data_path=str(tmp_path / "missing.csv"),
+    )
+
+    assert result["ok"] is False
+    assert result["kind"] == "validation_error"
+    assert result["message"] == f"File not found: {tmp_path / 'missing.csv'}"
+    assert "Traceback" not in result["message"]
+
+
+def test_empty_csv_profile_returns_actionable_validation_error(tmp_path: Path):
+    data_path = tmp_path / "empty.csv"
+    data_path.write_text("", encoding="utf-8")
+    context = ToolExecutionContext(
+        session_id="session-a",
+        output_dir=tmp_path / "sessions" / "session-a",
+    )
+
+    result = profile_dataset(context=context, data_path=str(data_path))
+
+    assert result["ok"] is False
+    assert result["kind"] == "validation_error"
+    assert "empty or has no readable columns" in result["message"]
+    assert "Traceback" not in result["message"]
+
+
+def test_unsupported_schema_file_returns_actionable_validation_error(tmp_path: Path):
+    data_path = tmp_path / "notes.txt"
+    data_path.write_text("not tabular", encoding="utf-8")
+    context = ToolExecutionContext(
+        session_id="session-a",
+        output_dir=tmp_path / "sessions" / "session-a",
+    )
+
+    result = inspect_dataset_schema(context=context, data_path=str(data_path))
+
+    assert result["ok"] is False
+    assert result["kind"] == "validation_error"
+    assert "Unsupported file type" in result["message"]
+    assert ".csv" in result["message"]
+
+
+def test_session_local_bare_filenames_resolve_for_schema_and_report(tmp_path: Path):
+    output_dir = tmp_path / "sessions" / "session-a"
+    output_dir.mkdir(parents=True)
+    prepared_path = output_dir / "analysis_inforce.parquet"
+    pd.DataFrame([{"Policy_Number": "P001", "Duration": 1}]).to_parquet(
+        prepared_path,
+        engine="pyarrow",
+        index=False,
+    )
+    sweep_path = output_dir / "sweep_summary.csv"
+    pd.DataFrame(
+        [
+            {
+                "Dimensions": "Gender=M",
+                "Sum_MAC": 2,
+                "Sum_MOC": 10.0,
+                "Sum_MEC": 1.0,
+                "Sum_MAF": 100000.0,
+                "Sum_MEF": 80000.0,
+                "AE_Ratio_Count": 2.0,
+                "AE_Ratio_Amount": 1.25,
+                "AE_Count_CI_Lower": 0.25,
+                "AE_Count_CI_Upper": 3.5,
+                "AE_Amount_CI_Lower": 0.30,
+                "AE_Amount_CI_Upper": 3.75,
+            }
+        ]
+    ).to_csv(sweep_path, index=False)
+    context = ToolExecutionContext(session_id="session-a", output_dir=output_dir)
+
+    schema_result = inspect_dataset_schema(
+        context=context,
+        data_path="analysis_inforce.parquet",
+    )
+    report_result = generate_combined_report(
+        context=context,
+        data_path="sweep_summary.csv",
+    )
+
+    assert schema_result["ok"] is True
+    assert schema_result["data"]["source_path"] == str(prepared_path.resolve())
+    assert report_result["ok"] is True
+    assert report_result["artifacts"]["sweep_summary_path"] == str(sweep_path.resolve())
 
 
 def test_dimensional_sweep_caps_top_n_payload(tmp_path: Path):

@@ -44,6 +44,7 @@ def test_ai_artifact_readiness_uses_manifest_hash_and_file_hash(tmp_path: Path) 
         "artifact_manifest": True,
         "state_fingerprint": True,
         "sweep_manifest_hash": True,
+        "sweep_hash_matches_file": True,
     }
     assert readiness.sweep_content_hash == file_sha256(sweep_path)
     assert readiness.actual_sweep_content_hash == file_sha256(sweep_path)
@@ -51,6 +52,38 @@ def test_ai_artifact_readiness_uses_manifest_hash_and_file_hash(tmp_path: Path) 
     assert manifest_content_hash_for_path(manifest_path, sweep_path) == file_sha256(
         sweep_path
     )
+
+
+def test_ai_artifact_readiness_blocks_manifest_file_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    sweep_path = tmp_path / "sweep_summary.csv"
+    sweep_path.write_text("Dimensions,Sum_MAC\nGender=M,2\n", encoding="utf-8")
+    manifest_path = tmp_path / "audit" / "artifact_manifest.json"
+    upsert_artifact_entry(
+        manifest_path,
+        artifact_type="sweep_summary",
+        path=sweep_path,
+        generating_tool="run_dimensional_sweep",
+        parameters={"depth": 1},
+        source_artifacts=[],
+    )
+    sweep_path.write_text("Dimensions,Sum_MAC\nGender=F,4\n", encoding="utf-8")
+
+    readiness = get_ai_artifact_readiness(
+        SimpleNamespace(
+            latest_sweep_path=sweep_path,
+            artifact_manifest_path=manifest_path,
+            latest_state_fingerprint="state-a",
+            refresh=_refresh_noop,
+        )
+    )
+
+    assert readiness.ready is False
+    assert readiness.checks["sweep_manifest_hash"] is True
+    assert readiness.checks["sweep_hash_matches_file"] is False
+    assert readiness.sweep_hash_matches_file is False
+    assert readiness.sweep_content_hash != readiness.actual_sweep_content_hash
 
 
 def test_paths_match_exact_strings_and_resolved_existing_paths(tmp_path: Path) -> None:

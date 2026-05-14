@@ -135,6 +135,14 @@ class _FakeClient:
         )
 
 
+class _FailingClient:
+    def __init__(self) -> None:
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kwargs):
+        raise RuntimeError("network unavailable")
+
+
 def test_fallback_response_includes_required_review_context(tmp_path: Path):
     packet = build_latest_sweep_packet(sweep_path=_write_sweep(tmp_path / "sweep.csv"))
 
@@ -179,6 +187,26 @@ def test_orchestrator_falls_back_without_client(tmp_path: Path):
 
     assert response.source_mode == "fallback"
     assert response.action_name == "explain_cohort"
+
+
+def test_orchestrator_logs_fallback_causes_without_packet_contents(
+    tmp_path: Path,
+    caplog,
+):
+    packet = build_latest_sweep_packet(sweep_path=_write_sweep(tmp_path / "sweep.csv"))
+    caplog.set_level("INFO")
+
+    run_ai_action(action_name="summarize_sweep", packet=packet)
+    run_ai_action(
+        action_name="summarize_sweep",
+        packet=packet,
+        client=_FailingClient(),
+    )
+
+    assert "no LLM client configured" in caplog.text
+    assert "LLM request failed (RuntimeError)" in caplog.text
+    assert "Gender=M" not in caplog.text
+    assert str(tmp_path) not in caplog.text
 
 
 def test_orchestrator_uses_llm_when_response_has_only_warnings(tmp_path: Path):

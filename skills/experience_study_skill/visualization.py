@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from html import escape
 import math
-from pathlib import Path
 from typing import Any, Sequence
 
 import pandas as pd
@@ -15,6 +14,8 @@ from skills.experience_study_skill.io import (
     ToolExecutionContext,
     _ensure_output_dir,
     _error_result,
+    _resolve_latest_sweep_path,
+    _tabular_error_result,
     _tool_result,
 )
 
@@ -339,18 +340,36 @@ def generate_combined_report(
     metric: str = "amount",
     data_path: str | None = None,
 ) -> dict[str, Any]:
-    source_path = Path(data_path) if data_path else context.latest_sweep_path
-    if source_path is None or not source_path.exists():
+    source_path = _resolve_latest_sweep_path(data_path, context)
+    if source_path is None:
+        if data_path:
+            return _error_result("validation_error", f"File not found: {data_path}")
         return _error_result(
             "missing_prerequisite",
             "Missing prerequisite. Run dimensional sweep first.",
         )
+    if source_path.suffix.lower() != ".csv":
+        return _error_result(
+            "validation_error",
+            f"Sweep summary must be a CSV artifact, got `{source_path.suffix or '<none>'}`.",
+        )
 
     context.emit_status("Generating the combined visualization report.")
-    df = pd.read_csv(source_path)
-    scatter_fragment = _figure_fragment(_build_scatter_figure(df, metric, str(source_path)))
-    table_fragment = _figure_fragment(_build_table_figure(df, metric, str(source_path)))
-    treemap_fragment = _figure_fragment(_build_treemap_figure(df, metric, str(source_path)))
+    try:
+        df = pd.read_csv(source_path)
+        scatter_fragment = _figure_fragment(_build_scatter_figure(df, metric, str(source_path)))
+        table_fragment = _figure_fragment(_build_table_figure(df, metric, str(source_path)))
+        treemap_fragment = _figure_fragment(_build_treemap_figure(df, metric, str(source_path)))
+    except (
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ) as exc:
+        return _tabular_error_result(source_path, exc)
+    except ValueError as exc:
+        return _error_result("validation_error", str(exc))
     report_html = _build_report_html(
         title=f"Combined A/E Visualization Report ({_metric_label(metric)})",
         metric=metric,

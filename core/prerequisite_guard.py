@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.artifact_readiness import path_exists
 from core.session_state import SessionArtifactState
 
 
@@ -42,13 +43,13 @@ def guard_missing_prerequisites(
     state: SessionArtifactState,
 ) -> str | None:
     state.refresh()
-    has_prepared = state.prepared_dataset_ready or state.prepared_dataset_path is not None
-    has_sweep = state.latest_sweep_ready or state.latest_sweep_path is not None
+    has_prepared = state.prepared_dataset_ready
+    has_sweep = state.latest_sweep_ready
+    has_raw = path_exists(state.raw_input_path)
     has_dataset = (
         intent.explicit_data_path
-        or state.prepared_dataset_ready
-        or state.prepared_dataset_path is not None
-        or state.raw_input_path is not None
+        or has_prepared
+        or has_raw
     )
     if intent.wants_schema and not has_dataset and not (
         intent.wants_profile or intent.wants_full_pipeline
@@ -67,11 +68,11 @@ def guard_missing_prerequisites(
     ):
         return "No prepared dataset exists for this session. Profile a dataset first."
     if (intent.wants_profile or intent.wants_full_pipeline) and not (
-        intent.explicit_data_path or state.raw_input_path
+        intent.explicit_data_path or has_raw
     ):
         return "Provide a dataset path to start the experience study workflow."
     if (intent.wants_band or intent.wants_regroup) and not (
-        state.prepared_dataset_ready or state.raw_input_path or intent.explicit_data_path
+        has_prepared or has_raw or intent.explicit_data_path
     ):
         return "No dataset is available for feature engineering. Profile a dataset first or provide a data_path."
     return None
@@ -82,29 +83,29 @@ def enabled_tool_names(
     state: SessionArtifactState,
 ) -> set[str]:
     state.refresh()
-    has_prepared = state.prepared_dataset_ready or state.prepared_dataset_path is not None
-    has_sweep = state.latest_sweep_ready or state.latest_sweep_path is not None
+    has_prepared = state.prepared_dataset_ready
+    has_sweep = state.latest_sweep_ready
+    has_raw = path_exists(state.raw_input_path)
     enabled: set[str] = set()
 
     if intent.wants_profile or intent.wants_full_pipeline:
-        if intent.explicit_data_path or state.raw_input_path:
+        if intent.explicit_data_path or has_raw:
             enabled.add("profile_dataset")
     if intent.wants_schema:
         if (
             intent.explicit_data_path
-            or state.prepared_dataset_ready
-            or state.prepared_dataset_path
-            or state.raw_input_path
+            or has_prepared
+            or has_raw
         ):
             enabled.add("inspect_dataset_schema")
     if intent.wants_validate:
-        if intent.explicit_data_path or state.raw_input_path or state.prepared_dataset_ready:
+        if intent.explicit_data_path or has_raw or has_prepared:
             enabled.add("run_actuarial_data_checks")
     if intent.wants_band:
-        if intent.explicit_data_path or state.raw_input_path or state.prepared_dataset_ready:
+        if intent.explicit_data_path or has_raw or has_prepared:
             enabled.add("create_categorical_bands")
     if intent.wants_regroup:
-        if intent.explicit_data_path or state.raw_input_path or state.prepared_dataset_ready:
+        if intent.explicit_data_path or has_raw or has_prepared:
             enabled.add("regroup_categorical_features")
     if has_prepared and (intent.wants_analysis or intent.wants_full_pipeline):
         enabled.add("run_dimensional_sweep")

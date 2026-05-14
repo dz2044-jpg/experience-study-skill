@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from skills.experience_study_skill.ai_cautions import collect_packet_caution_flags
@@ -20,6 +21,9 @@ from skills.experience_study_skill.ai_skill_renderer import render_action_prompt
 from skills.experience_study_skill.ai_validation import validate_ai_response
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 def run_ai_action(
     *,
     action_name: AIActionName,
@@ -34,12 +38,20 @@ def run_ai_action(
         raise ValueError(f"Unknown AI action: {action_name}")
 
     if client is None:
+        LOGGER.info(
+            "AI action `%s` using deterministic fallback: no LLM client configured.",
+            action_name,
+        )
         return build_fallback_response(
             action_name=action_name,
             packet=packet,
             action_context=action_context,
         )
     if requested_evidence_ref_not_found(action_name, packet, action_context):
+        LOGGER.info(
+            "AI action `%s` using deterministic fallback: requested evidence ref not found.",
+            action_name,
+        )
         return build_fallback_response(
             action_name=action_name,
             packet=packet,
@@ -67,7 +79,12 @@ def run_ai_action(
             ],
         )
         text = completion.choices[0].message.content or ""
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning(
+            "AI action `%s` using deterministic fallback: LLM request failed (%s).",
+            action_name,
+            type(exc).__name__,
+        )
         return build_fallback_response(
             action_name=action_name,
             packet=packet,
@@ -76,6 +93,11 @@ def run_ai_action(
 
     validation = validate_ai_response(text)
     if validation.blocked_issues:
+        LOGGER.warning(
+            "AI action `%s` using deterministic fallback: LLM response failed validation (%s).",
+            action_name,
+            ", ".join(issue.code for issue in validation.blocked_issues),
+        )
         return build_fallback_response(
             action_name=action_name,
             packet=packet,

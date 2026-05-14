@@ -11,6 +11,8 @@ from skills.experience_study_skill.io import (
     ToolExecutionContext,
     _ensure_output_dir,
     _error_result,
+    _resolve_current_dataset_path,
+    _tabular_error_result,
     _tool_result,
     load_tabular_input,
 )
@@ -22,16 +24,11 @@ def _resolve_feature_source(
     *,
     require_existing_prepared: bool = False,
 ) -> Path | None:
-    if explicit_data_path:
-        path = Path(explicit_data_path)
-        return path if path.exists() else None
-    if context.prepared_dataset_path and context.prepared_dataset_path.exists():
-        return context.prepared_dataset_path
-    if require_existing_prepared:
-        return None
-    if context.raw_input_path and context.raw_input_path.exists():
-        return context.raw_input_path
-    return None
+    return _resolve_current_dataset_path(
+        explicit_data_path,
+        context,
+        require_prepared=require_existing_prepared,
+    )
 
 
 def _save_prepared_dataset(df: pd.DataFrame, context: ToolExecutionContext) -> Path:
@@ -53,13 +50,25 @@ def create_categorical_bands(
 ) -> dict[str, Any]:
     source_path = _resolve_feature_source(data_path, context)
     if source_path is None:
+        if data_path:
+            return _error_result("validation_error", f"File not found: {data_path}")
         return _error_result(
             "missing_prerequisite",
             "No prepared dataset is available. Profile a dataset first or provide a data_path.",
         )
 
     context.emit_status("Applying deterministic categorical banding.")
-    df = load_tabular_input(str(source_path), sheet_name=sheet_name if data_path else None)
+    try:
+        df = load_tabular_input(str(source_path), sheet_name=sheet_name if data_path else None)
+    except (
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+        ValueError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ) as exc:
+        return _tabular_error_result(source_path, exc, sheet_name=sheet_name)
     if source_column not in df.columns:
         return _error_result(
             "validation_error",
@@ -73,28 +82,44 @@ def create_categorical_bands(
         )
 
     resolved_bins = bins
-    if strategy == "quantiles":
-        resolved_bins = bins or 4
-        banded = pd.qcut(df[source_column], q=resolved_bins, labels=False, duplicates="drop")
-    elif strategy == "equal_width":
-        resolved_bins = bins or 5
-        banded = pd.cut(df[source_column], bins=resolved_bins, labels=False, duplicates="drop")
-    elif strategy == "custom":
-        if not custom_bins:
+    try:
+        if strategy == "quantiles":
+            resolved_bins = bins or 4
+            banded = pd.qcut(
+                df[source_column],
+                q=resolved_bins,
+                labels=False,
+                duplicates="drop",
+            )
+        elif strategy == "equal_width":
+            resolved_bins = bins or 5
+            banded = pd.cut(
+                df[source_column],
+                bins=resolved_bins,
+                labels=False,
+                duplicates="drop",
+            )
+        elif strategy == "custom":
+            if not custom_bins:
+                return _error_result(
+                    "validation_error",
+                    "custom strategy requires custom_bins.",
+                )
+            banded = pd.cut(
+                df[source_column],
+                bins=custom_bins,
+                include_lowest=True,
+                duplicates="drop",
+            )
+        else:
             return _error_result(
                 "validation_error",
-                "custom strategy requires custom_bins.",
+                f"Unknown banding strategy `{strategy}`.",
             )
-        banded = pd.cut(
-            df[source_column],
-            bins=custom_bins,
-            include_lowest=True,
-            duplicates="drop",
-        )
-    else:
+    except ValueError as exc:
         return _error_result(
             "validation_error",
-            f"Unknown banding strategy `{strategy}`.",
+            f"Could not create `{strategy}` bands for `{source_column}`: {exc}",
         )
 
     new_column = f"{source_column}_band"
@@ -125,13 +150,25 @@ def regroup_categorical_features(
 ) -> dict[str, Any]:
     source_path = _resolve_feature_source(data_path, context)
     if source_path is None:
+        if data_path:
+            return _error_result("validation_error", f"File not found: {data_path}")
         return _error_result(
             "missing_prerequisite",
             "No prepared dataset is available. Profile a dataset first or provide a data_path.",
         )
 
     context.emit_status("Regrouping categorical values.")
-    df = load_tabular_input(str(source_path), sheet_name=sheet_name if data_path else None)
+    try:
+        df = load_tabular_input(str(source_path), sheet_name=sheet_name if data_path else None)
+    except (
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+        ValueError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ) as exc:
+        return _tabular_error_result(source_path, exc, sheet_name=sheet_name)
     if source_column not in df.columns:
         return _error_result(
             "validation_error",

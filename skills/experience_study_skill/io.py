@@ -91,6 +91,105 @@ def _ensure_output_dir(context: ToolExecutionContext) -> None:
     context.output_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _path_candidates(path: str | Path, context: ToolExecutionContext) -> list[Path]:
+    """Return ordered candidate paths for an explicit user/tool path."""
+
+    requested_path = Path(path)
+    if requested_path.is_absolute():
+        return [requested_path]
+    return [
+        requested_path,
+        context.output_dir / requested_path,
+        Path.cwd() / requested_path,
+    ]
+
+
+def _resolve_existing_path(path: str | Path, context: ToolExecutionContext) -> Path | None:
+    """Resolve a path against common session locations when it exists."""
+
+    for candidate in _path_candidates(path, context):
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _resolve_current_dataset_path(
+    explicit_path: str | None,
+    context: ToolExecutionContext,
+    *,
+    require_prepared: bool = False,
+) -> Path | None:
+    """Resolve the active dataset path for schema, validation, and analysis tools."""
+
+    if explicit_path:
+        return _resolve_existing_path(explicit_path, context)
+    if context.prepared_dataset_path and context.prepared_dataset_path.exists():
+        return context.prepared_dataset_path.resolve()
+    if require_prepared:
+        return None
+    if context.raw_input_path and context.raw_input_path.exists():
+        return context.raw_input_path.resolve()
+    return None
+
+
+def _resolve_latest_sweep_path(
+    explicit_path: str | None,
+    context: ToolExecutionContext,
+) -> Path | None:
+    """Resolve the latest sweep path, including session-local bare filenames."""
+
+    if explicit_path:
+        return _resolve_existing_path(explicit_path, context)
+    if context.latest_sweep_path and context.latest_sweep_path.exists():
+        return context.latest_sweep_path.resolve()
+    return None
+
+
+def _tabular_exception_message(
+    path: str | Path,
+    exc: Exception,
+    *,
+    sheet_name: str | None = None,
+) -> str:
+    """Convert common pandas/file read failures into user-actionable text."""
+
+    path_text = str(path)
+    if isinstance(exc, FileNotFoundError):
+        return f"File not found: {path_text}"
+    if isinstance(exc, pd.errors.EmptyDataError):
+        return (
+            f"`{path_text}` is empty or has no readable columns. "
+            "Provide a non-empty CSV, parquet, or XLSX dataset."
+        )
+    if isinstance(exc, pd.errors.ParserError):
+        return (
+            f"`{path_text}` could not be parsed as a tabular dataset. "
+            "Check the file delimiter, quoting, and format."
+        )
+    if isinstance(exc, PermissionError):
+        return f"`{path_text}` could not be read because permission was denied."
+    if isinstance(exc, OSError):
+        return f"`{path_text}` could not be read: {exc}"
+
+    message = str(exc)
+    if "Worksheet named" in message and sheet_name:
+        return f"Worksheet `{sheet_name}` was not found in `{path_text}`."
+    return message or f"`{path_text}` could not be read as a tabular dataset."
+
+
+def _tabular_error_result(
+    path: str | Path,
+    exc: Exception,
+    *,
+    sheet_name: str | None = None,
+) -> dict[str, Any]:
+    return _error_result(
+        "validation_error",
+        _tabular_exception_message(path, exc, sheet_name=sheet_name),
+        data={"error_type": type(exc).__name__},
+    )
+
+
 def list_excel_sheets(path: str) -> list[str]:
     workbook = pd.ExcelFile(path, engine="openpyxl")
     return workbook.sheet_names
@@ -156,6 +255,10 @@ def load_tabular_input_as_strings(path: str, sheet_name: str | None = None) -> p
 def get_tabular_columns(path: str, sheet_name: str | None = None) -> list[str]:
     input_path = Path(path)
     suffix = input_path.suffix.lower()
+    if suffix not in SUPPORTED_TABULAR_SUFFIXES:
+        raise ValueError(
+            f"Unsupported file type: {suffix or '<none>'}. Supported formats: {sorted(SUPPORTED_TABULAR_SUFFIXES)}"
+        )
     if suffix == ".csv":
         return pd.read_csv(input_path, nrows=0).columns.tolist()
     if suffix == ".parquet":
@@ -172,6 +275,10 @@ def get_tabular_columns(path: str, sheet_name: str | None = None) -> list[str]:
 def get_tabular_column_types(path: str, sheet_name: str | None = None) -> dict[str, str]:
     input_path = Path(path)
     suffix = input_path.suffix.lower()
+    if suffix not in SUPPORTED_TABULAR_SUFFIXES:
+        raise ValueError(
+            f"Unsupported file type: {suffix or '<none>'}. Supported formats: {sorted(SUPPORTED_TABULAR_SUFFIXES)}"
+        )
     if suffix == ".csv":
         sample = pd.read_csv(input_path, nrows=1000)
         return {column: str(dtype) for column, dtype in sample.dtypes.items()}
@@ -203,39 +310,18 @@ def _choose_dataset_path(
     *,
     require_prepared: bool = False,
 ) -> Path | None:
-    if explicit_path:
-        path = Path(explicit_path)
-        return path if path.exists() else None
-    if require_prepared:
-        if context.prepared_dataset_path and context.prepared_dataset_path.exists():
-            return context.prepared_dataset_path
-        return None
-    if context.prepared_dataset_path and context.prepared_dataset_path.exists():
-        return context.prepared_dataset_path
-    if context.raw_input_path and context.raw_input_path.exists():
-        return context.raw_input_path
-    return None
+    return _resolve_current_dataset_path(
+        explicit_path,
+        context,
+        require_prepared=require_prepared,
+    )
 
 
 def _resolve_schema_source_path(
     explicit_path: str | None,
     context: ToolExecutionContext,
 ) -> Path | None:
-    if explicit_path:
-        requested_path = Path(explicit_path)
-        candidates = [requested_path]
-        if not requested_path.is_absolute():
-            candidates.append(context.output_dir / requested_path)
-            candidates.append(Path.cwd() / requested_path)
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate.resolve()
-        return None
-    if context.prepared_dataset_path and context.prepared_dataset_path.exists():
-        return context.prepared_dataset_path.resolve()
-    if context.raw_input_path and context.raw_input_path.exists():
-        return context.raw_input_path.resolve()
-    return None
+    return _resolve_current_dataset_path(explicit_path, context)
 
 
 def profile_dataset(
@@ -244,12 +330,22 @@ def profile_dataset(
     context: ToolExecutionContext,
     sheet_name: str | None = None,
 ) -> dict[str, Any]:
-    source_path = Path(data_path)
-    if not source_path.exists():
+    source_path = _resolve_existing_path(data_path, context)
+    if source_path is None:
         return _error_result("validation_error", f"File not found: {data_path}")
 
     context.emit_status("Loading and profiling the source dataset.")
-    df = load_tabular_input(str(source_path), sheet_name=sheet_name)
+    try:
+        df = load_tabular_input(str(source_path), sheet_name=sheet_name)
+    except (
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+        ValueError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ) as exc:
+        return _tabular_error_result(source_path, exc, sheet_name=sheet_name)
     _ensure_output_dir(context)
     prepared_path = context.canonical_prepared_path()
     df.to_parquet(prepared_path, engine="pyarrow", index=False)
@@ -301,8 +397,18 @@ def inspect_dataset_schema(
         )
 
     context.emit_status("Inspecting the dataset schema.")
-    columns = get_tabular_columns(str(source_path), sheet_name=sheet_name)
-    column_types = get_tabular_column_types(str(source_path), sheet_name=sheet_name)
+    try:
+        columns = get_tabular_columns(str(source_path), sheet_name=sheet_name)
+        column_types = get_tabular_column_types(str(source_path), sheet_name=sheet_name)
+    except (
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+        ValueError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ) as exc:
+        return _tabular_error_result(source_path, exc, sheet_name=sheet_name)
     ordered_types = {column: column_types.get(column, "unknown") for column in columns}
     return _tool_result(
         True,

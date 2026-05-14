@@ -13,6 +13,7 @@ from skills.experience_study_skill.io import (
     _choose_dataset_path,
     _classify_feature_type,
     _error_result,
+    _tabular_error_result,
     _tool_result,
     load_tabular_input,
     load_tabular_input_as_strings,
@@ -44,14 +45,26 @@ def run_actuarial_data_checks(
 ) -> dict[str, Any]:
     source_path = _choose_dataset_path(data_path, context)
     if source_path is None:
+        if data_path:
+            return _error_result("validation_error", f"File not found: {data_path}")
         return _error_result(
             "missing_prerequisite",
             "No dataset is available. Profile a raw dataset first or provide a data_path.",
         )
 
     context.emit_status("Running deterministic actuarial validation checks.")
-    issues = _find_raw_non_numeric_values(str(source_path), sheet_name=sheet_name)
-    df = load_tabular_input(str(source_path), sheet_name=sheet_name)
+    try:
+        issues = _find_raw_non_numeric_values(str(source_path), sheet_name=sheet_name)
+        df = load_tabular_input(str(source_path), sheet_name=sheet_name)
+    except (
+        FileNotFoundError,
+        OSError,
+        PermissionError,
+        ValueError,
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ) as exc:
+        return _tabular_error_result(source_path, exc, sheet_name=sheet_name)
     missing_core_columns = [column for column in ACTUARIAL_NUMERICS if column not in df.columns]
     issues.extend(
         f"Missing required actuarial column: {column}."
