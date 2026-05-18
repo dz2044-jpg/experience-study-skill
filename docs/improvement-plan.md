@@ -406,7 +406,6 @@ UI section:
 Buttons:
 
 - Summarize Latest Sweep.
-- Explain Top Cohort.
 - Explain Selected Cohort.
 
 Response should show:
@@ -807,7 +806,7 @@ New audit capabilities:
 New AI capabilities:
 
 15. Summarize latest sweep.
-16. Explain selected/top cohort.
+16. Explain selected cohort.
 17. Draft mortality overview.
 18. Draft key findings.
 19. Generate methodology appendix.

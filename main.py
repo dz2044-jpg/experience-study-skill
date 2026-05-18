@@ -36,6 +36,8 @@ except ImportError:  # pragma: no cover - depends on environment
 
 
 LOGGER = logging.getLogger(__name__)
+USER_CHAT_AVATAR = "🔎"
+ASSISTANT_CHAT_AVATAR = "🧑‍💻"
 
 EMPTY_STATE_SUGGESTIONS = (
     (
@@ -221,19 +223,6 @@ def _format_ai_number(value: Any) -> str:
     if numeric_value is None:
         return "n/a"
     return f"{numeric_value:.2f}"
-
-
-def _select_top_cohort_evidence_ref(rows: list[Any]) -> str | None:
-    top_ref: str | None = None
-    top_value: float | None = None
-    for row in rows:
-        ae_amount = _coerce_float(getattr(row, "AE_Ratio_Amount", None))
-        if ae_amount is None:
-            continue
-        if top_value is None or ae_amount > top_value:
-            top_value = ae_amount
-            top_ref = str(getattr(row, "evidence_ref", ""))
-    return top_ref or None
 
 
 def _format_ai_cohort_label(row: Any) -> str:
@@ -453,7 +442,11 @@ def _render_ai_response(
     sections = _build_ai_response_sections(response_record, packet, readiness)
 
     st.markdown("##### AI Response")
-    st.caption(f"Source mode: `{sections['source_mode']}`")
+    if sections["freshness_status"] == "Stale":
+        st.warning(
+            "AI response is stale: "
+            + ", ".join(sections["freshness_mismatches"])
+        )
     st.markdown(sections["summary_text"])
 
     st.markdown("###### Deterministic Key Findings")
@@ -463,30 +456,34 @@ def _render_ai_response(
     else:
         st.caption("No deterministic key findings are available for the evidence refs.")
 
-    st.markdown("###### Evidence References")
-    st.markdown(
-        ", ".join(f"`{ref}`" for ref in sections["evidence_refs"])
-        if sections["evidence_refs"]
-        else "None"
-    )
-
-    st.markdown("###### Caution Flags")
-    st.markdown(
-        ", ".join(f"`{flag}`" for flag in sections["caution_flags"])
-        if sections["caution_flags"]
-        else "None"
-    )
-
-    if sections["validation_issues"]:
-        st.markdown("###### Validation Notes")
-        for issue in sections["validation_issues"]:
-            st.markdown(f"- {issue}")
-
     st.markdown("###### Next Review Steps")
     for step in sections["next_review_steps"]:
         st.markdown(f"- {step}")
 
-    _render_ai_status(readiness, sections)
+    with st.expander("Response details", expanded=False):
+        st.caption(f"Source mode: `{sections['source_mode']}`")
+
+        st.markdown("###### Evidence References")
+        st.markdown(
+            ", ".join(f"`{ref}`" for ref in sections["evidence_refs"])
+            if sections["evidence_refs"]
+            else "None"
+        )
+
+        st.markdown("###### Caution Flags")
+        st.markdown(
+            ", ".join(f"`{flag}`" for flag in sections["caution_flags"])
+            if sections["caution_flags"]
+            else "None"
+        )
+
+        if sections["validation_issues"]:
+            st.markdown("###### Validation Notes")
+            for issue in sections["validation_issues"]:
+                st.markdown(f"- {issue}")
+
+    with st.expander("Freshness details", expanded=False):
+        _render_ai_status(readiness, sections)
 
 
 def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
@@ -498,14 +495,22 @@ def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
         st.caption(
             "Interprets the latest sanitized sweep packet with evidence and freshness metadata."
         )
-        _render_ai_status(readiness)
 
         if not readiness.ready:
-            columns = st.columns(3)
-            columns[0].button("Summarize Latest Sweep", disabled=True, use_container_width=True)
-            columns[1].button("Explain Top Cohort", disabled=True, use_container_width=True)
-            columns[2].button("Explain Selected Cohort", disabled=True, use_container_width=True)
-            st.caption("Run a dimensional sweep with artifact tracking before using AI interpretation.")
+            columns = st.columns(2)
+            columns[0].button(
+                "Summarize Latest Sweep",
+                disabled=True,
+                use_container_width=True,
+            )
+            columns[1].button(
+                "Explain Selected Cohort",
+                disabled=True,
+                use_container_width=True,
+            )
+            st.warning("Run a dimensional sweep before using AI interpretation.")
+            with st.expander("Artifact readiness details", expanded=False):
+                _render_ai_status(readiness)
             return
 
         try:
@@ -516,7 +521,6 @@ def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
 
         rows_by_ref = {row.evidence_ref: row for row in packet.rows}
         evidence_refs = list(rows_by_ref)
-        top_evidence_ref = _select_top_cohort_evidence_ref(list(rows_by_ref.values()))
         selected_evidence_ref = None
         if evidence_refs:
             selected_evidence_ref = st.selectbox(
@@ -528,7 +532,7 @@ def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
         else:
             st.caption("No cohort rows are available in the latest sanitized AI packet.")
 
-        columns = st.columns(3)
+        columns = st.columns(2)
         response_record: dict[str, Any] | None = None
         if columns[0].button(
             "Summarize Latest Sweep",
@@ -542,19 +546,6 @@ def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
                 readiness=readiness,
             )
         if columns[1].button(
-            "Explain Top Cohort",
-            key="ai-explain-top-cohort",
-            disabled=top_evidence_ref is None,
-            use_container_width=True,
-        ):
-            response_record = _run_ai_interpretation_action(
-                copilot=copilot,
-                action_name="explain_cohort",
-                packet=packet,
-                readiness=readiness,
-                selected_evidence_ref=top_evidence_ref,
-            )
-        if columns[2].button(
             "Explain Selected Cohort",
             key="ai-explain-selected-cohort",
             disabled=selected_evidence_ref is None,
@@ -574,6 +565,19 @@ def _render_ai_interpretation_panel(copilot: UnifiedCopilot) -> None:
         stored_response_record = st.session_state.get("ai_interpretation_response")
         if stored_response_record:
             _render_ai_response(stored_response_record, packet, readiness)
+
+        with st.expander("Artifact readiness details", expanded=False):
+            _render_ai_status(readiness)
+
+
+def _render_ai_interpretation_dialog(copilot: UnifiedCopilot) -> None:
+    _require_streamlit()
+
+    @st.dialog("AI Interpretation", width="large")
+    def _dialog() -> None:
+        _render_ai_interpretation_panel(copilot)
+
+    _dialog()
 
 
 def _ai_workflow_freshness_mismatches(
@@ -682,8 +686,11 @@ def _render_workflow_panel(copilot: UnifiedCopilot) -> None:
 
 def _render_sidebar() -> bool:
     _require_streamlit()
+    open_ai_dialog = False
     with st.sidebar:
         _render_workflow_panel(st.session_state["copilot"])
+        st.markdown("---")
+        open_ai_dialog = st.button("Open AI Interpretation", use_container_width=True)
         st.markdown("---")
         st.title("Copilot Controls")
         st.caption(f"Session: `{st.session_state['session_id']}`")
@@ -694,6 +701,8 @@ def _render_sidebar() -> bool:
             st.session_state["ai_interpretation_response"] = None
             st.rerun()
             return True
+    if open_ai_dialog:
+        _render_ai_interpretation_dialog(st.session_state["copilot"])
     return False
 
 
@@ -772,9 +781,9 @@ def render_app() -> None:
     _render_empty_state()
 
     for index, item in enumerate(st.session_state["history"]):
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar=USER_CHAT_AVATAR):
             st.markdown(item["prompt"])
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=ASSISTANT_CHAT_AVATAR):
             st.markdown(item["response"])
             _render_sweep_explorer(item.get("sweep_results"))
             _render_visualization_card(
@@ -787,9 +796,9 @@ def render_app() -> None:
     )
     if prompt and prompt.strip():
         cleaned_prompt = prompt.strip()
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar=USER_CHAT_AVATAR):
             st.markdown(cleaned_prompt)
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=ASSISTANT_CHAT_AVATAR):
             status_panel = st.status("Starting copilot...", expanded=True)
             response_placeholder = st.empty()
             response, visualization_path, sweep_results = _consume_copilot_events(
@@ -808,8 +817,6 @@ def render_app() -> None:
                 "sweep_results": sweep_results,
             }
         )
-
-    _render_ai_interpretation_panel(st.session_state["copilot"])
 
 
 def main() -> None:

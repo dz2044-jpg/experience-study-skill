@@ -25,10 +25,10 @@ The app's current intended workflow is deterministic first, then AI interpretati
 | 15 | **Run a 1-way sweep on BadColumn.** | Expected failure. Response should say `BadColumn` was not found in the prepared dataset and may return available columns. |
 | 16 | **Generate the combined report.** | Should generate a standalone HTML visualization from the latest sweep artifact. Expected response should confirm the combined report was generated and provide a visualization artifact. The Streamlit UI should also show a visualization card with "Download HTML" and inline preview. |
 | 17 | **Generate the combined report for count.** | Should generate the report using the count metric instead of amount. Expected artifact is still an HTML combined A/E report. |
-| 18 | **Clear Conversation, then open AI Interpretation Panel.** | Expected: AI buttons should be disabled because there is no latest sweep artifact, artifact manifest, state fingerprint, or sweep manifest hash. The panel should show artifact readiness status. |
-| 19 | **After running a sweep, use AI Interpretation Panel -> Summarize Latest Sweep.** | Expected: button should be enabled only after sweep artifact, manifest, and fingerprint are available. Response should show summary text, source mode (`fallback` or `llm`), evidence references, caution flags, next review steps, and freshness status. |
-| 20 | **AI Interpretation Panel -> Explain Top Cohort.** | Expected: should select the row with the highest `AE_Ratio_Amount` and explain it using the sanitized sweep packet. Response should include deterministic key findings such as MAC, MEC, A/E count, and A/E amount. |
-| 21 | **AI Interpretation Panel -> Explain Selected Cohort.** | Expected: selectbox should show cohorts using evidence refs and labels like `Dimensions`, `A/E Amount=...`, `MAC=...`, and `evidence_ref`. The response should explain only the selected cohort. |
+| 18 | **Clear Conversation, then open AI Interpretation from the sidebar.** | Expected: AI buttons should be disabled because there is no latest sweep artifact, artifact manifest, state fingerprint, or sweep manifest hash. Detailed artifact readiness should be hidden inside a collapsed details expander. |
+| 19 | **After running a sweep, use AI Interpretation -> Summarize Latest Sweep.** | Expected: button should be enabled only after sweep artifact, manifest, and fingerprint are available. Response should show summary text, deterministic key findings, next review steps, and collapsed response/freshness details. |
+| 20 | **AI Interpretation -> Explain Selected Cohort.** | Expected: selectbox should show cohorts using evidence refs and labels like `Dimensions`, `A/E Amount=...`, `MAC=...`, and `evidence_ref`. The response should explain only the selected cohort. |
+| 21 | **Confirm AI Interpretation actions.** | Expected: the dialog should show only `Summarize Latest Sweep` and `Explain Selected Cohort`; `Explain Top Cohort` should not appear. |
 | 22 | **Run a new sweep after an AI response, then look at the prior AI response.** | Expected: prior AI response should be marked stale if the state fingerprint, packet fingerprint, or sweep content hash changed. The AI panel explicitly compares those freshness fields. |
 
 A good end-to-end smoke test sequence is:
@@ -47,7 +47,6 @@ A good end-to-end smoke test sequence is:
 11. Generate the combined report.
 12. Use AI Interpretation Panel:
     - Summarize Latest Sweep
-    - Explain Top Cohort
     - Explain Selected Cohort
 ```
 

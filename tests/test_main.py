@@ -46,9 +46,32 @@ class _NullContext:
         return False
 
 
+class _TrackingContext(_NullContext):
+    def __init__(self, parent: "_FakeAIPanelStreamlit", label: str) -> None:
+        self.parent = parent
+        self.label = label
+
+    def __enter__(self):
+        self.parent.context_stack.append(self.label)
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        self.parent.context_stack.pop()
+        return False
+
+
+class _FakeColumn(_NullContext):
+    def __init__(self, parent: "_FakeAIPanelStreamlit") -> None:
+        self.parent = parent
+
+    def button(self, label: str, **kwargs: object) -> bool:
+        return self.parent.button(label, **kwargs)
+
+
 class _FakeStreamlitApp:
     def __init__(self, *, prompt: str | None, copilot: object) -> None:
         self.prompt = prompt
+        self.chat_message_calls: list[dict[str, object]] = []
         self.session_state: dict[str, object] = {
             "session_id": "session-a",
             "copilot": copilot,
@@ -71,7 +94,8 @@ class _FakeStreamlitApp:
     def chat_input(self, message: str) -> str | None:
         return self.prompt
 
-    def chat_message(self, role: str) -> _NullContext:
+    def chat_message(self, role: str, **kwargs: object) -> _NullContext:
+        self.chat_message_calls.append({"role": role, **kwargs})
         return _NullContext()
 
     def status(self, message: str, *, expanded: bool) -> _FakeStatusPanel:
@@ -145,6 +169,111 @@ class _FakeAIStatusStreamlit:
 
     def error(self, message: str) -> None:
         self.error_calls.append(message)
+
+
+class _FakeAIPanelStreamlit:
+    def __init__(
+        self,
+        *,
+        copilot: object | None = None,
+        button_results: dict[str, bool] | None = None,
+    ) -> None:
+        self.button_results = button_results or {}
+        self.session_state: dict[str, object] = {
+            "session_id": "session-a",
+            "copilot": copilot or SimpleNamespace(),
+            "history": [],
+            "ai_interpretation_response": None,
+        }
+        self.sidebar = _TrackingContext(self, "sidebar")
+        self.context_stack: list[str] = []
+        self.button_calls: list[dict[str, object]] = []
+        self.caption_calls: list[dict[str, object]] = []
+        self.dialog_calls: list[dict[str, object]] = []
+        self.expander_calls: list[dict[str, object]] = []
+        self.markdown_calls: list[dict[str, object]] = []
+        self.selectbox_calls: list[dict[str, object]] = []
+        self.status_calls: list[dict[str, object]] = []
+
+    def _context(self) -> tuple[str, ...]:
+        return tuple(self.context_stack)
+
+    def container(self, *, border: bool) -> _TrackingContext:
+        return _TrackingContext(self, "container")
+
+    def expander(self, label: str, *, expanded: bool) -> _TrackingContext:
+        self.expander_calls.append(
+            {"label": label, "expanded": expanded, "context": self._context()}
+        )
+        return _TrackingContext(self, label)
+
+    def columns(self, spec: int | list[int]) -> list[_FakeColumn]:
+        count = spec if isinstance(spec, int) else len(spec)
+        return [_FakeColumn(self) for _ in range(count)]
+
+    def button(self, label: str, **kwargs: object) -> bool:
+        self.button_calls.append({"label": label, "context": self._context(), **kwargs})
+        return self.button_results.get(label, False)
+
+    def dialog(self, title: str, *, width: str):
+        def decorator(func):
+            def wrapped(*args, **kwargs):
+                self.dialog_calls.append({"title": title, "width": width})
+                return func(*args, **kwargs)
+
+            return wrapped
+
+        return decorator
+
+    def selectbox(
+        self,
+        label: str,
+        *,
+        options: list[str],
+        format_func,
+        key: str,
+    ) -> str | None:
+        self.selectbox_calls.append(
+            {
+                "label": label,
+                "options": options,
+                "key": key,
+                "context": self._context(),
+            }
+        )
+        return options[0] if options else None
+
+    def caption(self, message: str) -> None:
+        self.caption_calls.append({"message": message, "context": self._context()})
+
+    def error(self, message: str) -> None:
+        self.status_calls.append(
+            {"kind": "error", "message": message, "context": self._context()}
+        )
+
+    def info(self, message: str) -> None:
+        self.status_calls.append(
+            {"kind": "info", "message": message, "context": self._context()}
+        )
+
+    def markdown(self, message: str) -> None:
+        self.markdown_calls.append({"message": message, "context": self._context()})
+
+    def success(self, message: str) -> None:
+        self.status_calls.append(
+            {"kind": "success", "message": message, "context": self._context()}
+        )
+
+    def title(self, message: str) -> None:
+        self.markdown_calls.append({"message": message, "context": self._context()})
+
+    def warning(self, message: str) -> None:
+        self.status_calls.append(
+            {"kind": "warning", "message": message, "context": self._context()}
+        )
+
+    def rerun(self) -> None:
+        self.status_calls.append({"kind": "rerun", "message": "", "context": self._context()})
 
 
 class _FakeRenderCopilot:
@@ -552,7 +681,12 @@ def test_render_ai_status_marks_skipped_hash_check_as_not_run(monkeypatch) -> No
     assert readiness.ready is True
 
 
-def test_render_app_renders_ai_panel_after_current_chat_processing(monkeypatch) -> None:
+def test_chat_avatar_constants_use_requested_emoji_pair() -> None:
+    assert main.USER_CHAT_AVATAR == "🔎"
+    assert main.ASSISTANT_CHAT_AVATAR == "🧑‍💻"
+
+
+def test_render_app_does_not_render_ai_panel_after_current_chat_processing(monkeypatch) -> None:
     calls: list[str] = []
     copilot = _FakeRenderCopilot(calls)
     fake_st = _FakeStreamlitApp(prompt=" Run sweep now ", copilot=copilot)
@@ -574,7 +708,11 @@ def test_render_app_renders_ai_panel_after_current_chat_processing(monkeypatch) 
 
     main.render_app()
 
-    assert calls == ["empty_state", "process:Run sweep now", "ai_panel:True"]
+    assert calls == ["empty_state", "process:Run sweep now"]
+    assert fake_st.chat_message_calls == [
+        {"role": "user", "avatar": main.USER_CHAT_AVATAR},
+        {"role": "assistant", "avatar": main.ASSISTANT_CHAT_AVATAR},
+    ]
     assert fake_st.session_state["history"] == [
         {
             "prompt": "Run sweep now",
@@ -613,7 +751,7 @@ def test_render_app_passes_copilot_event_iterable_without_materializing(monkeypa
     assert calls == ["process:Run sweep now", "events_is_list:False"]
 
 
-def test_render_app_renders_ai_panel_without_prompt(monkeypatch) -> None:
+def test_render_app_does_not_render_ai_panel_without_prompt(monkeypatch) -> None:
     calls: list[str] = []
     copilot = _FakeRenderCopilot(calls)
     fake_st = _FakeStreamlitApp(prompt=None, copilot=copilot)
@@ -629,8 +767,91 @@ def test_render_app_renders_ai_panel_without_prompt(monkeypatch) -> None:
 
     main.render_app()
 
-    assert calls == ["empty_state", "ai_panel:False"]
+    assert calls == ["empty_state"]
     assert fake_st.session_state["history"] == []
+
+
+def test_sidebar_ai_launcher_opens_dialog(monkeypatch) -> None:
+    calls: list[str] = []
+    copilot = SimpleNamespace()
+    fake_st = _FakeAIPanelStreamlit(
+        copilot=copilot,
+        button_results={"Open AI Interpretation": True},
+    )
+
+    monkeypatch.setattr(main, "st", fake_st)
+    monkeypatch.setattr(
+        main,
+        "_render_workflow_panel",
+        lambda panel_copilot: calls.append(f"workflow:{panel_copilot is copilot}"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_render_ai_interpretation_panel",
+        lambda panel_copilot: calls.append(f"ai_panel:{panel_copilot is copilot}"),
+    )
+
+    should_stop = main._render_sidebar()
+
+    assert should_stop is False
+    assert calls == ["workflow:True", "ai_panel:True"]
+    assert fake_st.dialog_calls == [{"title": "AI Interpretation", "width": "large"}]
+    assert [call["label"] for call in fake_st.button_calls] == [
+        "Open AI Interpretation",
+        "Clear Conversation",
+    ]
+
+
+def test_ai_panel_renders_only_summary_and_selected_actions(monkeypatch) -> None:
+    fake_st = _FakeAIPanelStreamlit()
+    readiness = main._AIArtifactReadiness(
+        checks={
+            "latest_sweep": True,
+            "artifact_manifest": True,
+            "state_fingerprint": True,
+            "sweep_manifest_hash": True,
+            "sweep_hash_matches_file": True,
+        },
+        sweep_path=Path("sweep_summary.csv"),
+        artifact_manifest_path=Path("artifact_manifest.json"),
+        state_fingerprint="state-a",
+        sweep_content_hash="hash-a",
+    )
+
+    monkeypatch.setattr(main, "st", fake_st)
+    monkeypatch.setattr(main, "_get_ai_panel_readiness", lambda state: readiness)
+    monkeypatch.setattr(main, "_build_ai_packet_for_panel", lambda current: _example_packet())
+
+    main._render_ai_interpretation_panel(SimpleNamespace(state=object()))
+
+    button_labels = [call["label"] for call in fake_st.button_calls]
+    assert button_labels == ["Summarize Latest Sweep", "Explain Selected Cohort"]
+    assert "Explain Top Cohort" not in button_labels
+    assert fake_st.selectbox_calls == [
+        {
+            "label": "Selected Cohort",
+            "options": ["row_0001", "row_0002"],
+            "key": "ai-selected-cohort",
+            "context": ("container",),
+        }
+    ]
+    assert fake_st.expander_calls == [
+        {
+            "label": "Artifact readiness details",
+            "expanded": False,
+            "context": ("container",),
+        }
+    ]
+    readiness_status_calls = [
+        call
+        for call in fake_st.status_calls
+        if call["message"] in main._AI_READINESS_LABELS.values()
+    ]
+    assert readiness_status_calls
+    assert all(
+        "Artifact readiness details" in call["context"]
+        for call in readiness_status_calls
+    )
 
 
 def test_empty_state_suggestion_uses_existing_sample_dataset() -> None:
@@ -911,19 +1132,6 @@ def test_ai_workflow_snapshot_blocks_on_manifest_file_hash_mismatch(
     assert snapshot.ready is False
     assert snapshot.readiness_checks["sweep_hash_matches_file"] is False
     assert "Manifest/file hash match" in snapshot.detail
-
-
-def test_select_top_cohort_ignores_invalid_values_and_preserves_tie_order() -> None:
-    rows = [
-        SimpleNamespace(evidence_ref="missing", AE_Ratio_Amount=None),
-        SimpleNamespace(evidence_ref="bad", AE_Ratio_Amount="not numeric"),
-        SimpleNamespace(evidence_ref="lower", AE_Ratio_Amount="1.9"),
-        SimpleNamespace(evidence_ref="first-high", AE_Ratio_Amount=2.5),
-        SimpleNamespace(evidence_ref="second-high", AE_Ratio_Amount=2.5),
-    ]
-
-    assert main._select_top_cohort_evidence_ref(rows) == "first-high"
-    assert main._select_top_cohort_evidence_ref(rows[:2]) is None
 
 
 def test_format_ai_cohort_label_is_readable_but_evidence_ref_stable() -> None:
